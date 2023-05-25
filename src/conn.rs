@@ -259,7 +259,7 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
                 }
                 Some(Ok(timeout)) = self.unacked.next() => {
                     let (seq, packet) = timeout;
-                    tracing::debug!(seq, ack = %packet.ack_num(), packet = ?packet.packet_type(), "timeout");
+                    tracing::warn!(seq, ack = %packet.ack_num(), packet = ?packet.packet_type(), "timeout");
 
                     self.on_timeout(packet, Instant::now());
                 }
@@ -812,6 +812,7 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
             },
             State::Established { sent_packets, .. } | State::Closing { sent_packets, .. } => {
                 let range = sent_packets.seq_num_range();
+                tracing::warn!("timeout fsdxx2 {:?} :: {:?} :: {:?}", ack_num, seq_num, range);
                 if range.contains(ack_num) {
                     // Do not ACK if ACK num corresponds to initial packet.
                     if ack_num != range.start() {
@@ -833,6 +834,7 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
                         }
                     }
                 } else {
+                    tracing::warn!("timeout fsdxx3 {:?}", ack_num);
                     self.reset(Error::InvalidAckNum);
                 }
             }
@@ -1085,6 +1087,7 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
         };
 
         sent_packets.on_transmit(packet.seq_num(), packet.packet_type(), payload, len, now);
+        //tracing::warn!("timeout bugxxz5 {:?}", sent_packets.timeout());
         unacked.insert_at(packet.seq_num(), packet.clone(), sent_packets.timeout());
         socket_events
             .send(SocketEvent::Outgoing((packet, dest.clone())))
