@@ -1,4 +1,5 @@
 use std::cmp;
+use std::cmp::max;
 use std::collections::VecDeque;
 use std::fmt;
 use std::io;
@@ -15,7 +16,13 @@ use crate::packet::{Packet, PacketBuilder, PacketType, SelectiveAck};
 use crate::recv::ReceiveBuffer;
 use crate::send::SendBuffer;
 use crate::sent::SentPackets;
-use crate::seq::CircularRangeInclusive;
+use crate::utils::wrap_compare_less;
+
+// rationale from C reference impl:
+// Allow a reception window of at least 3 ack_nrs behind seq_nr
+// A non-SYN packet with an ack_nr difference greater than this is
+// considered suspicious and ignored
+const ALLOWED_ACK_WINDOW: u16 = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Error {
@@ -136,6 +143,14 @@ pub struct Connection<const N: usize, P> {
     readable: Notify,
     pending_writes: VecDeque<Write>,
     writable: Notify,
+
+    // The number of packets in the send queue. Packets that haven't
+    // been sent yet and packets marked as needing to be resend count.
+    // The oldest un-acked packet in the send queue is seq_nr - cur_window_packets
+    cur_window_packets: u16,
+
+    // counter of duplicate acks
+    duplicate_ack: u16,    
 }
 
 impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
@@ -176,6 +191,8 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
             readable: Notify::new(),
             pending_writes: VecDeque::new(),
             writable: Notify::new(),
+            cur_window_packets: 0,
+            duplicate_ack: 0,
         }
     }
 
@@ -217,7 +234,7 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
                 // number). This is consistent with the reference implementation and the libtorrent
                 // implementation where STATE packets set the sequence number to the next sequence
                 // number.
-                let sent_packets = SentPackets::new(syn_ack.wrapping_sub(1), congestion_ctrl);
+                let sent_packets = SentPackets::new(syn_ack.wrapping_sub(1), syn_ack.wrapping_sub(1), congestion_ctrl);
 
                 // The connection must be in the `Connecting` state. We optimistically mark the
                 // connection `Established` here. This enables the accepting endpoint to send DATA
@@ -347,6 +364,7 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
 
                     tracing::debug!(seq = %seq_num, "transmitting FIN");
                     Self::transmit(
+                        &mut self.cur_window_packets,
                         sent_packets,
                         &mut self.unacked,
                         &mut self.socket_events,
@@ -395,6 +413,7 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
 
                     tracing::debug!(seq = %seq_num, "transmitting FIN");
                     Self::transmit(
+                        &mut self.cur_window_packets,
                         sent_packets,
                         &mut self.unacked,
                         &mut self.socket_events,
@@ -486,6 +505,7 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
             .selective_ack(selective_ack.clone())
             .build();
             Self::transmit(
+                &mut self.cur_window_packets,
                 sent_packets,
                 &mut self.unacked,
                 &mut self.socket_events,
@@ -656,6 +676,7 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
                     .ts_diff_micros(ts_diff_micros)
                     .build();
                 Self::transmit(
+                    &mut self.cur_window_packets,
                     sent_packets,
                     &mut self.unacked,
                     &mut self.socket_events,
@@ -798,7 +819,7 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
                         let send_buf = SendBuffer::new();
 
                         let congestion_ctrl = congestion::Controller::new(self.config.into());
-                        let sent_packets = SentPackets::new(syn, congestion_ctrl);
+                        let sent_packets = SentPackets::new(syn, syn, congestion_ctrl);
 
                         let _ = connected.take().unwrap().send(Ok(()));
                         self.state = State::Established {
@@ -811,30 +832,77 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
                 Endpoint::Acceptor(..) => {}
             },
             State::Established { sent_packets, .. } | State::Closing { sent_packets, .. } => {
-                let range = sent_packets.seq_num_range();
-                if range.contains(ack_num) {
-                    // Do not ACK if ACK num corresponds to initial packet.
-                    if ack_num != range.start() {
-                        sent_packets.on_ack(ack_num, selective_ack, delay, now);
-                    }
+                // invalid ack check from libtorrent
+                let ack_window = max(self.cur_window_packets + ALLOWED_ACK_WINDOW, ALLOWED_ACK_WINDOW);
+                if wrap_compare_less(sent_packets.seq_num().wrapping_sub(1), ack_num) ||
+                    wrap_compare_less(ack_num, sent_packets.seq_num().wrapping_sub(1).wrapping_sub(ack_window)) {
+                    // this reset is weird libtorrent just skips the packet instead of resetting
+                    // Hopefully jacob can spot me with a reason for this
+                    self.reset(Error::InvalidAckNum);
+                    return;
+                }
 
-                    // Mark all packets up to `ack_num` acknowledged by retaining all packets in
-                    // the range beyond `ack_num`.
-                    let acked = CircularRangeInclusive::new(range.start(), ack_num);
-                    self.unacked.retain(|seq, _| !acked.contains(*seq));
+                // number of packets past the expected
+                // ack_nr is the last acked, seq_nr is the
+                // current. Subtracting 1 makes 0 mean "this is the next expected packet"
+                let past_expected = seq_num - sent_packets.ack_num() - 1;
 
-                    // TODO: Helper for selective ACK.
-                    if let Some(selective_ack) = selective_ack {
-                        for (i, acked) in selective_ack.acked().iter().enumerate() {
-                            let seq_num = usize::from(ack_num).wrapping_add(2 + i) as u16;
-                            if *acked {
-                                self.unacked.remove(&seq_num);
-                            }
+                // acks is the number of packets that was acked, in normal case - no selective
+                // acks, no losses, no resends, it will usually be equal to 1
+                // we can calculate it here and not only for ST_STATE packet, as each utp
+                // packet has info about remote side last acked packet.
+                let mut acks = ack_num - (sent_packets.seq_num() - 1 - self.cur_window_packets);
+
+                if acks > self.cur_window_packets {
+                    // this case happens if the we already received this ack nr
+                    acks = 0;
+                }
+
+                // rationale from c reference impl:
+                // if we get the same ack_nr as in the last packet
+                // increase the duplicate_ack counter, otherwise reset
+                // it to 0.
+                // It's important to only count ACKs in ST_STATE packets. Any other
+                // packet (primarily ST_DATA) is likely to have been sent because of the
+                // other end having new outgoing data, not in response to incoming data.
+                // For instance, if we're receiving a steady stream of payload with no
+                // outgoing data, and we suddently have a few bytes of payload to send (say,
+                // a bittorrent HAVE message), we're very likely to see 3 duplicate ACKs
+                // immediately after sending our payload packet. This effectively disables
+                // the fast-resend on duplicate-ack logic for bi-directional connections
+                // (except in the case of a selective ACK). This is in line with BSD4.4 TCP
+                // implementation.
+                if self.cur_window_packets > 0 && ack_num == sent_packets.seq_num() - self.cur_window_packets - 1 {
+                    self.duplicate_ack += 1;
+                } else {
+                    self.duplicate_ack = 0
+                }
+
+                let mut i: u16 = 0;
+                while i < acks {
+                    sent_packets.ack(ack_num, delay, now);
+                    i += 1;
+                }
+                sent_packets.on_ack(ack_num, selective_ack, delay, now);
+                    // }
+                    //
+                    // // Mark all packets up to `ack_num` acknowledged by retaining all packets in
+                    // // the range beyond `ack_num`.
+                    // let acked = CircularRangeInclusive::new(range.start(), ack_num);
+                    // self.unacked.retain(|seq, _| !acked.contains(*seq));
+
+                // TODO: Helper for selective ACK.
+                if let Some(selective_ack) = selective_ack {
+                    for (i, acked) in selective_ack.acked().iter().enumerate() {
+                        let seq_num = usize::from(ack_num).wrapping_add(2 + i) as u16;
+                        if *acked {
+                            self.unacked.remove(&seq_num);
                         }
                     }
-                } else {
-                    self.reset(Error::InvalidAckNum);
                 }
+                // } else {
+                //     self.reset(Error::InvalidAckNum);
+                // }
             }
             State::Closed { .. } => {}
         }
@@ -1057,6 +1125,7 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
                 .build();
 
             Self::transmit(
+                &mut self.cur_window_packets,
                 sent_packets,
                 &mut self.unacked,
                 &mut self.socket_events,
@@ -1068,6 +1137,7 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
     }
 
     fn transmit(
+        cur_window_packets: &mut u16,
         sent_packets: &mut SentPackets,
         unacked: &mut HashMapDelay<u16, Packet>,
         socket_events: &mut mpsc::UnboundedSender<SocketEvent<P>>,
@@ -1086,6 +1156,7 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
 
         sent_packets.on_transmit(packet.seq_num(), packet.packet_type(), payload, len, now);
         unacked.insert_at(packet.seq_num(), packet.clone(), sent_packets.timeout());
+        *cur_window_packets = cur_window_packets.wrapping_add(1);
         socket_events
             .send(SocketEvent::Outgoing((packet, dest.clone())))
             .expect("outgoing channel should be open if connection is not closed");
@@ -1125,6 +1196,8 @@ mod test {
             readable: Notify::new(),
             pending_writes: VecDeque::new(),
             writable: Notify::new(),
+            cur_window_packets: 0,
+            duplicate_ack: 0,
         }
     }
 
@@ -1192,7 +1265,7 @@ mod test {
         let mut conn = conn(endpoint);
 
         let congestion_ctrl = congestion::Controller::new(conn.config.into());
-        let mut sent_packets = SentPackets::new(syn_ack, congestion_ctrl);
+        let mut sent_packets = SentPackets::new(syn_ack, syn_ack, congestion_ctrl);
 
         let data = vec![0xef];
         let len = 64;
@@ -1240,7 +1313,7 @@ mod test {
 
         let send_buf = SendBuffer::new();
         let congestion_ctrl = congestion::Controller::new(conn.config.into());
-        let sent_packets = SentPackets::new(syn_ack, congestion_ctrl);
+        let sent_packets = SentPackets::new(syn_ack, syn_ack, congestion_ctrl);
         let recv_buf = ReceiveBuffer::new(syn);
 
         conn.state = State::Established {
@@ -1273,7 +1346,7 @@ mod test {
 
         let send_buf = SendBuffer::new();
         let congestion_ctrl = congestion::Controller::new(conn.config.into());
-        let sent_packets = SentPackets::new(syn_ack, congestion_ctrl);
+        let sent_packets = SentPackets::new(syn_ack, syn_ack, congestion_ctrl);
         let recv_buf = ReceiveBuffer::new(syn);
 
         let local_fin = syn_ack.wrapping_add(3);
@@ -1309,7 +1382,7 @@ mod test {
 
         let send_buf = SendBuffer::new();
         let congestion_ctrl = congestion::Controller::new(conn.config.into());
-        let sent_packets = SentPackets::new(syn_ack, congestion_ctrl);
+        let sent_packets = SentPackets::new(syn_ack, syn_ack, congestion_ctrl);
         let recv_buf = ReceiveBuffer::new(syn);
 
         let fin = syn.wrapping_add(3);

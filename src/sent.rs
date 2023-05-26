@@ -30,6 +30,8 @@ impl SentPacket {
 pub struct SentPackets {
     packets: Vec<SentPacket>,
     init_seq_num: u16,
+    seq_num: u16,
+    ack_num: u16,
     lost_packets: BTreeSet<u16>,
     congestion_ctrl: congestion::Controller,
 }
@@ -37,25 +39,36 @@ pub struct SentPackets {
 impl SentPackets {
     /// Note: `init_seq_num` corresponds to the sequence number just before the sequence number of
     /// the first packet to track.
-    pub fn new(init_seq_num: u16, congestion_ctrl: congestion::Controller) -> Self {
+    pub fn new(init_seq_num: u16, seq_num: u16, congestion_ctrl: congestion::Controller) -> Self {
         Self {
             packets: Vec::new(),
             init_seq_num,
+            seq_num,
+            ack_num: 0,
             lost_packets: BTreeSet::new(),
             congestion_ctrl,
         }
     }
 
+    pub fn inc_seq_num(&mut self) {
+        self.seq_num = self.seq_num.wrapping_add(1);
+    }
+
     pub fn next_seq_num(&self) -> u16 {
-        // Assume cast is okay, meaning that `packets` never contains more than `u16::MAX`
-        // elements.
-        self.init_seq_num
-            .wrapping_add(self.packets.len() as u16)
-            .wrapping_add(1)
+        self.seq_num.wrapping_add(1)
+    }
+
+    pub fn seq_num(&self) -> u16 {
+        self.seq_num
+    }
+
+    pub fn inc_ack_num(&mut self) {
+        self.ack_num = self.ack_num.wrapping_add(1);
     }
 
     pub fn ack_num(&self) -> u16 {
-        self.last_ack_num().unwrap_or(0)
+        self.ack_num
+
     }
 
     pub fn seq_num_range(&self) -> CircularRangeInclusive {
@@ -151,6 +164,9 @@ impl SentPackets {
 
         // The unwrap is safe given the check above on the available window.
         self.congestion_ctrl.on_transmit(seq_num, transmit).unwrap();
+
+        // increment sequence number on transmit
+        self.inc_seq_num();
     }
 
     /// # Panics
@@ -243,7 +259,7 @@ impl SentPackets {
     /// # Panics
     ///
     /// Panics if `seq_num` does not correspond to a previously sent packet.
-    fn ack(&mut self, seq_num: u16, delay: Duration, now: Instant) {
+    pub fn ack(&mut self, seq_num: u16, delay: Duration, now: Instant) {
         let index = self.seq_num_index(seq_num);
         let packet = self.packets.get_mut(index).unwrap();
 
@@ -357,17 +373,17 @@ mod test {
 
     #[test]
     fn next_seq_num() {
-        fn prop(init_seq_num: u16, len: u8) -> TestResult {
+        fn prop(seq_num: u16, len: u8) -> TestResult {
             let congestion_ctrl = congestion::Controller::new(congestion::Config::default());
-            let mut sent_packets = SentPackets::new(init_seq_num, congestion_ctrl);
+            let mut sent_packets = SentPackets::new(seq_num, seq_num, congestion_ctrl);
             if len == 0 {
                 return TestResult::from_bool(
-                    sent_packets.next_seq_num() == init_seq_num.wrapping_add(1),
+                    sent_packets.next_seq_num() == seq_num.wrapping_add(1),
                 );
             }
 
-            let final_seq_num = init_seq_num.wrapping_add(u16::from(len));
-            let range = CircularRangeInclusive::new(init_seq_num.wrapping_add(1), final_seq_num);
+            let final_seq_num = seq_num.wrapping_add(u16::from(len));
+            let range = CircularRangeInclusive::new(seq_num.wrapping_add(1), final_seq_num);
             let transmission = Instant::now();
             for seq_num in range {
                 sent_packets.packets.push(SentPacket {
@@ -378,6 +394,7 @@ mod test {
                     acks: Default::default(),
                     retransmissions: Default::default(),
                 });
+                sent_packets.inc_seq_num();
             }
 
             TestResult::from_bool(sent_packets.next_seq_num() == final_seq_num.wrapping_add(1))
@@ -389,7 +406,7 @@ mod test {
     fn on_transmit_initial() {
         let init_seq_num = u16::MAX;
         let congestion_ctrl = congestion::Controller::new(congestion::Config::default());
-        let mut sent_packets = SentPackets::new(init_seq_num, congestion_ctrl);
+        let mut sent_packets = SentPackets::new(init_seq_num, init_seq_num, congestion_ctrl);
 
         let seq_num = sent_packets.next_seq_num();
         let data = vec![0];
@@ -410,7 +427,7 @@ mod test {
     fn on_transmit_retransmit() {
         let init_seq_num = u16::MAX;
         let congestion_ctrl = congestion::Controller::new(congestion::Config::default());
-        let mut sent_packets = SentPackets::new(init_seq_num, congestion_ctrl);
+        let mut sent_packets = SentPackets::new(init_seq_num, init_seq_num, congestion_ctrl);
 
         let seq_num = sent_packets.next_seq_num();
         let data = vec![0];
@@ -435,7 +452,7 @@ mod test {
     fn on_transmit_out_of_order() {
         let init_seq_num = u16::MAX;
         let congestion_ctrl = congestion::Controller::new(congestion::Config::default());
-        let mut sent_packets = SentPackets::new(init_seq_num, congestion_ctrl);
+        let mut sent_packets = SentPackets::new(init_seq_num, init_seq_num, congestion_ctrl);
 
         let out_of_order_seq_num = init_seq_num.wrapping_add(2);
         let data = vec![0];
@@ -449,7 +466,7 @@ mod test {
     fn on_selective_ack() {
         let init_seq_num = u16::MAX;
         let congestion_ctrl = congestion::Controller::new(congestion::Config::default());
-        let mut sent_packets = SentPackets::new(init_seq_num, congestion_ctrl);
+        let mut sent_packets = SentPackets::new(init_seq_num, init_seq_num, congestion_ctrl);
 
         let data = vec![0];
         let len = data.len() as u32;
@@ -489,7 +506,7 @@ mod test {
     fn detect_lost_packets() {
         let init_seq_num = u16::MAX;
         let congestion_ctrl = congestion::Controller::new(congestion::Config::default());
-        let mut sent_packets = SentPackets::new(init_seq_num, congestion_ctrl);
+        let mut sent_packets = SentPackets::new(init_seq_num, init_seq_num, congestion_ctrl);
 
         let data = vec![0];
         let len = data.len() as u32;
@@ -517,7 +534,7 @@ mod test {
     fn ack() {
         let init_seq_num = u16::MAX;
         let congestion_ctrl = congestion::Controller::new(congestion::Config::default());
-        let mut sent_packets = SentPackets::new(init_seq_num, congestion_ctrl);
+        let mut sent_packets = SentPackets::new(init_seq_num, init_seq_num, congestion_ctrl);
 
         let seq_num = sent_packets.next_seq_num();
         let data = vec![0];
@@ -544,7 +561,7 @@ mod test {
     fn ack_prior_unacked() {
         let init_seq_num = u16::MAX;
         let congestion_ctrl = congestion::Controller::new(congestion::Config::default());
-        let mut sent_packets = SentPackets::new(init_seq_num, congestion_ctrl);
+        let mut sent_packets = SentPackets::new(init_seq_num, init_seq_num, congestion_ctrl);
 
         let data = vec![0];
         let len = data.len() as u32;
@@ -572,7 +589,7 @@ mod test {
     fn ack_unsent() {
         let init_seq_num = u16::MAX;
         let congestion_ctrl = congestion::Controller::new(congestion::Config::default());
-        let mut sent_packets = SentPackets::new(init_seq_num, congestion_ctrl);
+        let mut sent_packets = SentPackets::new(init_seq_num, init_seq_num, congestion_ctrl);
 
         let unsent_ack_num = init_seq_num.wrapping_add(2);
         let now = Instant::now();
@@ -583,7 +600,7 @@ mod test {
     fn seq_num_index() {
         let init_seq_num = u16::MAX;
         let congestion_ctrl = congestion::Controller::new(congestion::Config::default());
-        let sent_packets = SentPackets::new(init_seq_num, congestion_ctrl);
+        let sent_packets = SentPackets::new(init_seq_num, init_seq_num, congestion_ctrl);
 
         assert_eq!(
             sent_packets.seq_num_index(init_seq_num),
