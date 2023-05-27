@@ -859,6 +859,12 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
                     acks = 0;
                 }
 
+                // seqnr is the number of packets past the expected
+                // packet this is. ack_nr is the last acked, seq_nr is the
+                // current. Subtracring 1 makes 0 mean "this is the next
+                // expected packet".
+                let seqnr: u16 = seq_num - sent_packets.ack_num().wrapping_sub(1);
+
                 // rationale from c reference impl:
                 // if we get the same ack_nr as in the last packet
                 // increase the duplicate_ack counter, otherwise reset
@@ -895,24 +901,49 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
 
                 // An ACK for `ack_num` implicitly ACKs all sequence numbers that precede `ack_num`.
                 // Account for any preceding unacked packets.
-                sent_packets.ack_prior_unacked(acks, &mut self.cur_window_packets, delay, now);
+                //sent_packets.ack_prior_unacked(acks, &mut self.cur_window_packets, delay, now);
 
-                // Account for (newly) lost packets.
-                let lost = sent_packets.detect_lost_packets(self.cur_window_packets);
-                for packet in lost {
-                    if sent_packets.lost_packets.insert(packet) {
-                        sent_packets.on_lost(packet, true);
+                for _ in 0..acks {
+                    let ack_status = sent_packets.ack(sent_packets.seq_num().wrapping_sub(self.cur_window_packets), delay, now);
+                    if !ack_status {
+                        break;
                     }
+                    self.cur_window_packets -= 1;
                 }
+
+                // packets in front of this may have been acked by a
+                // selective ack (EACK). Keep decreasing the window packet size
+                // until we hit a packet that is still waiting to be acked
+                // in the send queue
+                // this is especially likely to happen when the other end
+                // has the EACK send bug older versions of uTP had
+                while self.cur_window_packets > 0 && sent_packets.packets.get((sent_packets.seq_num() - self.cur_window_packets) as usize).is_none() {
+                    self.cur_window_packets -= 1;
+                }
+
+                // this invariant should always be true
+                assert!(self.cur_window_packets == 0 || sent_packets.packets.get((sent_packets.seq_num() - self.cur_window_packets) as usize).is_some());
+
+                // // Account for (newly) lost packets.
+                // let lost = sent_packets.detect_lost_packets(self.cur_window_packets);
+                // for packet in lost {
+                //     if sent_packets.lost_packets.insert(packet) {
+                //         sent_packets.on_lost(packet, true);
+                //     }
+                // }
 
                 // TODO: Helper for selective ACK.
                 if let Some(selective_ack) = selective_ack {
                     for (i, acked) in selective_ack.acked().iter().enumerate() {
-                        let seq_num = usize::from(ack_num).wrapping_add(2 + i) as u16;
+                        let seq_num = usize::from(ack_num).wrapping_add(2 + i);
                         if *acked {
-                            self.unacked.remove(&seq_num);
+                            sent_packets.packets.delete(seq_num);
                         }
                     }
+                }
+
+                if seqnr == 0 {
+                    sent_packets.inc_ack_num();
                 }
                 // } else {
                 //     self.reset(Error::InvalidAckNum);

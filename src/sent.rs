@@ -11,7 +11,7 @@ const LOSS_THRESHOLD: usize = 3;
 type Bytes = Vec<u8>;
 
 #[derive(Clone, Debug)]
-struct SentPacket {
+pub struct SentPacket {
     pub seq_num: u16,
     pub packet_type: PacketType,
     pub data: Option<Bytes>,
@@ -29,7 +29,7 @@ impl SentPacket {
 
 #[derive(Clone, Debug)]
 pub struct SentPackets {
-    packets: SizableCircularBuffer<SentPacket>,
+    pub packets: SizableCircularBuffer<SentPacket>,
     init_seq_num: u16,
     seq_num: u16,
     ack_num: u16,
