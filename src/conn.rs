@@ -770,7 +770,8 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
             ..
         } = &mut self.state
         {
-            if !sent_packets.has_unacked_packets() && recv_buf.ack_num() == *remote {
+            let acts = packet.ack_num() - (sent_packets.seq_num().wrapping_sub(1).wrapping_sub(self.cur_window_packets));
+            if self.cur_window_packets == acts && recv_buf.ack_num() == *remote {
                 self.state = State::Closed { err: None };
             }
         }
@@ -878,18 +879,31 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
                     self.duplicate_ack = 0
                 }
 
-                let mut i: u16 = 0;
-                while i < acks {
-                    sent_packets.ack(ack_num, delay, now);
-                    i += 1;
-                }
-                sent_packets.on_ack(ack_num, selective_ack, delay, now);
+                // let mut i: u16 = 0;
+                // while i < acks {
+                //     sent_packets.ack(ack_num, delay, now);
+                //     i += 1;
+                // }
+                //sent_packets.on_ack(ack_num, selective_ack, delay, now);
+
                     // }
                     //
                     // // Mark all packets up to `ack_num` acknowledged by retaining all packets in
                     // // the range beyond `ack_num`.
                     // let acked = CircularRangeInclusive::new(range.start(), ack_num);
                     // self.unacked.retain(|seq, _| !acked.contains(*seq));
+
+                // An ACK for `ack_num` implicitly ACKs all sequence numbers that precede `ack_num`.
+                // Account for any preceding unacked packets.
+                sent_packets.ack_prior_unacked(acks, &mut self.cur_window_packets, delay, now);
+
+                // Account for (newly) lost packets.
+                let lost = sent_packets.detect_lost_packets(self.cur_window_packets);
+                for packet in lost {
+                    if sent_packets.lost_packets.insert(packet) {
+                        sent_packets.on_lost(packet, true);
+                    }
+                }
 
                 // TODO: Helper for selective ACK.
                 if let Some(selective_ack) = selective_ack {
@@ -1154,7 +1168,7 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
             )
         };
 
-        sent_packets.on_transmit(packet.seq_num(), packet.packet_type(), payload, len, now);
+        sent_packets.on_transmit(packet.seq_num(), packet.packet_type(), payload, len, now, *cur_window_packets);
         unacked.insert_at(packet.seq_num(), packet.clone(), sent_packets.timeout());
         *cur_window_packets = cur_window_packets.wrapping_add(1);
         socket_events
@@ -1276,6 +1290,7 @@ mod test {
             Some(data),
             len,
             now,
+            10
         );
 
         let send_buf = SendBuffer::new();

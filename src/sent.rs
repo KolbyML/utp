@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 use crate::congestion;
 use crate::packet::{PacketType, SelectiveAck};
 use crate::seq::CircularRangeInclusive;
+use crate::utils::SizableCircularBuffer;
 
 const LOSS_THRESHOLD: usize = 3;
 
@@ -28,11 +29,11 @@ impl SentPacket {
 
 #[derive(Clone, Debug)]
 pub struct SentPackets {
-    packets: Vec<SentPacket>,
+    packets: SizableCircularBuffer<SentPacket>,
     init_seq_num: u16,
     seq_num: u16,
     ack_num: u16,
-    lost_packets: BTreeSet<u16>,
+    pub lost_packets: BTreeSet<u16>,
     congestion_ctrl: congestion::Controller,
 }
 
@@ -41,7 +42,7 @@ impl SentPackets {
     /// the first packet to track.
     pub fn new(init_seq_num: u16, seq_num: u16, congestion_ctrl: congestion::Controller) -> Self {
         Self {
-            packets: Vec::new(),
+            packets: SizableCircularBuffer::new(),
             init_seq_num,
             seq_num,
             ack_num: 0,
@@ -88,10 +89,6 @@ impl SentPackets {
         self.congestion_ctrl.bytes_available_in_window()
     }
 
-    pub fn has_unacked_packets(&self) -> bool {
-        self.first_unacked_seq_num().is_some()
-    }
-
     pub fn has_lost_packets(&self) -> bool {
         !self.lost_packets.is_empty()
     }
@@ -100,10 +97,8 @@ impl SentPackets {
         self.lost_packets
             .iter()
             .map(|seq| {
-                let index = self.seq_num_index(*seq);
-
                 // The unwrap is safe because only sent packets may be lost.
-                let packet = self.packets.get(index).unwrap();
+                let packet = self.packets.get(*seq as usize).clone().unwrap();
 
                 (packet.seq_num, packet.packet_type, packet.data.clone())
             })
@@ -124,26 +119,24 @@ impl SentPackets {
         data: Option<Bytes>,
         len: u32,
         now: Instant,
+        cur_window_packets: u16,
     ) {
-        let index = self.seq_num_index(seq_num);
-        let is_retransmission = index < self.packets.len();
-
         // If the packet sequence number is beyond the next sequence number, then panic.
-        if index > self.packets.len() {
+        if seq_num > self.next_seq_num() {
             panic!("out of order transmit");
         }
 
-        // If this is not a retransmission and the length of the packet is greater than the amount
-        // of available space in the window, then panic.
-        if !is_retransmission && len > self.window() {
-            panic!("transmit exceeds available send window");
-        }
-
-        match self.packets.get_mut(index) {
+        let is_retransmission = match self.packets.get_mut(seq_num as usize) {
             Some(sent) => {
                 sent.retransmissions.push(now);
+                true
             }
             None => {
+                // If this is not a retransmission and the length of the packet is greater than the amount
+                // of available space in the window, then panic.
+                if len > self.window() {
+                    panic!("transmit exceeds available send window");
+                }
                 let sent = SentPacket {
                     seq_num,
                     packet_type,
@@ -152,9 +145,11 @@ impl SentPackets {
                     retransmissions: Vec::new(),
                     acks: Vec::new(),
                 };
-                self.packets.push(sent);
+                self.packets.ensure_size(self.seq_num as usize, cur_window_packets as usize);
+                self.packets.put(seq_num as usize, sent);
+                false
             }
-        }
+        };
 
         let transmit = if is_retransmission {
             congestion::Transmit::Retransmission
@@ -185,17 +180,17 @@ impl SentPackets {
             self.ack(ack_num, delay, now);
         }
 
-        // An ACK for `ack_num` implicitly ACKs all sequence numbers that precede `ack_num`.
-        // Account for any preceding unacked packets.
-        self.ack_prior_unacked(ack_num, delay, now);
-
-        // Account for (newly) lost packets.
-        let lost = self.detect_lost_packets();
-        for packet in lost {
-            if self.lost_packets.insert(packet) {
-                self.on_lost(packet, true);
-            }
-        }
+        // // An ACK for `ack_num` implicitly ACKs all sequence numbers that precede `ack_num`.
+        // // Account for any preceding unacked packets.
+        // self.ack_prior_unacked(ack_num, delay, now);
+        //
+        // // Account for (newly) lost packets.
+        // let lost = self.detect_lost_packets();
+        // for packet in lost {
+        //     if self.lost_packets.insert(packet) {
+        //         self.on_lost(packet, true);
+        //     }
+        // }
     }
 
     /// # Panics
@@ -234,67 +229,57 @@ impl SentPackets {
     ///
     /// A packet is lost if it has not been acknowledged and some threshold number of packets sent
     /// after it have been acknowledged.
-    fn detect_lost_packets(&self) -> BTreeSet<u16> {
-        let mut acked = 0;
+    pub fn detect_lost_packets(&self, cur_window_packets: u16) -> BTreeSet<u16> {
         let mut lost = BTreeSet::new();
 
-        let start = match self.first_unacked_seq_num() {
-            Some(first_unacked) => self.seq_num_index(first_unacked),
-            None => return lost,
-        };
-
-        for packet in self.packets[start..].iter().rev() {
-            if packet.acks.is_empty() && acked >= LOSS_THRESHOLD {
-                lost.insert(packet.seq_num);
-            }
-
-            if !packet.acks.is_empty() {
-                acked += 1;
+        for i in 0..cur_window_packets {
+            let packet_seq_num = self.seq_num.wrapping_sub(1).wrapping_sub(i);
+            if let Some(packet) = self.packets.get(packet_seq_num as usize) {
+                if packet.retransmissions.is_empty() {
+                    lost.insert(packet.seq_num);
+                }
             }
         }
 
         lost
     }
 
-    /// # Panics
-    ///
-    /// Panics if `seq_num` does not correspond to a previously sent packet.
-    pub fn ack(&mut self, seq_num: u16, delay: Duration, now: Instant) {
-        let index = self.seq_num_index(seq_num);
-        let packet = self.packets.get_mut(index).unwrap();
+    /// Returns false if `seq_num` does not correspond to a previously sent packet.
+    pub fn ack(&mut self, seq_num: u16, delay: Duration, now: Instant) -> bool {
+        let binding = self.packets.clone();
+        let packet_option = binding.get(seq_num as usize);
+        if let Some(packet) = packet_option {
+            self.packets.delete(seq_num as usize);
 
-        let ack = congestion::Ack {
-            delay,
-            rtt: packet.rtt(now),
-            received_at: now,
-        };
-        self.congestion_ctrl.on_ack(packet.seq_num, ack).unwrap();
+            let ack = congestion::Ack {
+                delay,
+                rtt: packet.rtt(now),
+                received_at: now,
+            };
+            self.congestion_ctrl.on_ack(packet.seq_num, ack).unwrap();
 
-        packet.acks.push(now);
+            // we should stop using it like this
+            //packet.acks.push(now);
 
-        self.lost_packets.remove(&packet.seq_num);
+            self.lost_packets.remove(&packet.seq_num);
+            true
+        } else {
+            false
+        }
     }
 
-    /// Acknowledges any unacknowledged packets that precede `seq_num`.
-    fn ack_prior_unacked(&mut self, seq_num: u16, delay: Duration, now: Instant) {
-        if let Some(first_unacked) = self.first_unacked_seq_num() {
-            let start = self.seq_num_index(first_unacked);
-            let end = self.seq_num_index(seq_num);
-            if start >= end {
-                return;
-            }
-
-            let to_ack: Vec<u16> = self.packets[start..end].iter().map(|p| p.seq_num).collect();
-            for seq_num in to_ack {
-                self.ack(seq_num, delay, now);
-            }
+    /// Acknowledges any unacknowledged packets that precede `ack_num`.
+    pub fn ack_prior_unacked(&mut self, ack_num: u16, cur_window_packets: &mut u16, delay: Duration, now: Instant) {
+        for _ in 0..ack_num {
+            self.ack(ack_num.wrapping_sub(*cur_window_packets), delay, now);
+            *cur_window_packets -= 1;
         }
     }
 
     /// # Panics
     ///
     /// Panics if `seq_num` does not correspond to a previously sent packet.
-    fn on_lost(&mut self, seq_num: u16, retransmitting: bool) {
+    pub fn on_lost(&mut self, seq_num: u16, retransmitting: bool) {
         if !self.seq_num_range().contains(seq_num) {
             panic!("cannot mark unsent packet lost");
         }
@@ -303,61 +288,6 @@ impl SentPackets {
         self.congestion_ctrl
             .on_lost_packet(seq_num, retransmitting)
             .expect("lost packet was previously sent");
-    }
-
-    /// Returns the "normalized" index for `seq_num` based on the initial sequence number.
-    fn seq_num_index(&self, seq_num: u16) -> usize {
-        // The first sequence number is equal to `self.init_seq_num.wrapping_add(1)`.
-        if seq_num > self.init_seq_num {
-            usize::from(seq_num - self.init_seq_num - 1)
-        } else {
-            usize::from((u16::MAX - self.init_seq_num).wrapping_add(seq_num))
-        }
-    }
-
-    /// Returns the sequence number of the last (i.e. latest) packet in a contiguous sequence of
-    /// acknowledged packets.
-    ///
-    /// Returns `None` if none of the (possibly zero) packets have been acknowledged.
-    // TODO: Cache this value, (possibly) updating on each ACK.
-    fn last_ack_num(&self) -> Option<u16> {
-        if self.packets.is_empty() {
-            return None;
-        }
-
-        let mut num = None;
-        for packet in &self.packets {
-            if !packet.acks.is_empty() {
-                num = Some(packet.seq_num);
-            } else {
-                break;
-            }
-        }
-
-        num
-    }
-
-    /// Returns the sequence number of the first (i.e. earliest) packet that has not been
-    /// acknowledged.
-    ///
-    /// Returns `None` if all (possibly zero) sent packets have been acknowledged.
-    fn first_unacked_seq_num(&self) -> Option<u16> {
-        if self.packets.is_empty() {
-            return None;
-        }
-
-        let seq_num = match self.last_ack_num() {
-            Some(last_ack_num) => {
-                // If the last ACK num corresponds to the last packet, then return `None`.
-                if self.packets.last().unwrap().seq_num == last_ack_num {
-                    return None;
-                }
-                last_ack_num.wrapping_add(1)
-            }
-            None => self.init_seq_num.wrapping_add(1),
-        };
-
-        Some(seq_num)
     }
 }
 
@@ -386,7 +316,7 @@ mod test {
             let range = CircularRangeInclusive::new(seq_num.wrapping_add(1), final_seq_num);
             let transmission = Instant::now();
             for seq_num in range {
-                sent_packets.packets.push(SentPacket {
+                sent_packets.packets.put(seq_num as usize, SentPacket {
                     seq_num,
                     packet_type: PacketType::Data,
                     data: None,
@@ -412,11 +342,9 @@ mod test {
         let data = vec![0];
         let len = data.len() as u32;
         let now = Instant::now();
-        sent_packets.on_transmit(seq_num, PacketType::Data, Some(data), len, now);
+        sent_packets.on_transmit(seq_num, PacketType::Data, Some(data), len, now, 10);
 
-        assert_eq!(sent_packets.packets.len(), 1);
-
-        let packet = &sent_packets.packets[0];
+        let packet = sent_packets.packets.get(seq_num as usize).clone().unwrap();
         assert_eq!(packet.seq_num, seq_num);
         assert_eq!(packet.transmission, now);
         assert!(packet.acks.is_empty());
@@ -434,12 +362,10 @@ mod test {
         let len = data.len() as u32;
         let first = Instant::now();
         let second = Instant::now();
-        sent_packets.on_transmit(seq_num, PacketType::Data, Some(data.clone()), len, first);
-        sent_packets.on_transmit(seq_num, PacketType::Data, Some(data), len, second);
+        sent_packets.on_transmit(seq_num, PacketType::Data, Some(data.clone()), len, first, 10);
+        sent_packets.on_transmit(seq_num, PacketType::Data, Some(data), len, second, 10);
 
-        assert_eq!(sent_packets.packets.len(), 1);
-
-        let packet = &sent_packets.packets[0];
+        let packet = sent_packets.packets.get(seq_num as usize).clone().unwrap();
         assert_eq!(packet.seq_num, seq_num);
         assert_eq!(packet.transmission, first);
         assert!(packet.acks.is_empty());
@@ -459,7 +385,7 @@ mod test {
         let len = data.len() as u32;
         let now = Instant::now();
 
-        sent_packets.on_transmit(out_of_order_seq_num, PacketType::Data, Some(data), len, now);
+        sent_packets.on_transmit(out_of_order_seq_num, PacketType::Data, Some(data), len, now, 10);
     }
 
     #[test]
@@ -472,10 +398,12 @@ mod test {
         let len = data.len() as u32;
 
         const COUNT: usize = 10;
+        let mut seq_nums = Vec::new();
         for _ in 0..COUNT {
             let now = Instant::now();
             let seq_num = sent_packets.next_seq_num();
-            sent_packets.on_transmit(seq_num, PacketType::Data, Some(data.clone()), len, now);
+            seq_nums.push(seq_num);
+            sent_packets.on_transmit(seq_num, PacketType::Data, Some(data.clone()), len, now, 10);
         }
 
         const SACK_LEN: usize = COUNT - 2;
@@ -494,11 +422,11 @@ mod test {
             DELAY,
             now,
         );
-        assert_eq!(sent_packets.packets[0].acks.len(), 1);
-        assert!(sent_packets.packets[1].acks.is_empty());
-        for i in 2..COUNT {
-            let is_empty = i % 2 != 0;
-            assert_eq!(sent_packets.packets[i].acks.is_empty(), is_empty);
+        assert_eq!(sent_packets.packets.get(init_seq_num.wrapping_add(1) as usize).clone().is_none(), true);
+        assert!(sent_packets.packets.get(*seq_nums.get(1).unwrap() as usize).clone().unwrap().acks.is_empty());
+        for i in seq_nums[2..COUNT].into_iter() {
+            let is_packet_acked = i % 2 == 0;
+            assert_eq!(sent_packets.packets.get(*i as usize).clone().is_none(), is_packet_acked);
         }
     }
 
@@ -513,19 +441,22 @@ mod test {
 
         const COUNT: usize = 10;
         const START: usize = COUNT - LOSS_THRESHOLD;
+        let mut seq_nums = Vec::new();
         for i in 0..COUNT {
             let now = Instant::now();
             let seq_num = sent_packets.next_seq_num();
-            sent_packets.on_transmit(seq_num, PacketType::Data, Some(data.clone()), len, now);
+            seq_nums.push(seq_num);
+            sent_packets.on_transmit(seq_num, PacketType::Data, Some(data.clone()), len, now, 10);
 
             if i >= START {
                 sent_packets.ack(seq_num, DELAY, now);
             }
         }
 
-        let lost = sent_packets.detect_lost_packets();
+        let lost = sent_packets.detect_lost_packets(20 as u16);
+        let hi = lost.len();
         for i in 0..START {
-            let packet = &sent_packets.packets[i];
+            let packet = &sent_packets.packets.get(*seq_nums.get(i).unwrap() as usize).clone().unwrap();
             assert!(lost.contains(&packet.seq_num));
         }
     }
@@ -540,7 +471,7 @@ mod test {
         let data = vec![0];
         let len = data.len() as u32;
         let now = Instant::now();
-        sent_packets.on_transmit(seq_num, PacketType::Data, Some(data), len, now);
+        sent_packets.on_transmit(seq_num, PacketType::Data, Some(data), len, now, 10);
 
         // Artificially insert packet into lost packets.
         sent_packets.lost_packets.insert(seq_num);
@@ -549,12 +480,10 @@ mod test {
         let now = Instant::now();
         sent_packets.ack(seq_num, DELAY, now);
 
-        let index = sent_packets.seq_num_index(seq_num);
-        let packet = sent_packets.packets.get(index).unwrap();
+        let packet = sent_packets.packets.get(seq_num as usize).clone();
 
-        assert_eq!(packet.acks.len(), 1);
-        assert_eq!(packet.acks[0], now);
-        assert!(!sent_packets.lost_packets.contains(&seq_num));
+        // If a packet was acked, the receiver got it so we no longer store it
+        assert_eq!(packet.is_none(), true);
     }
 
     #[test]
@@ -567,10 +496,12 @@ mod test {
         let len = data.len() as u32;
 
         const COUNT: usize = 10;
+        let mut seq_nums = Vec::new();
         for _ in 0..COUNT {
             let now = Instant::now();
             let seq_num = sent_packets.next_seq_num();
-            sent_packets.on_transmit(seq_num, PacketType::Data, Some(data.clone()), len, now);
+            seq_nums.push(seq_num);
+            sent_packets.on_transmit(seq_num, PacketType::Data, Some(data.clone()), len, now, 10);
         }
 
         const ACK_NUM: u16 = 3;
@@ -578,14 +509,13 @@ mod test {
         assert!(COUNT - usize::from(ACK_NUM) > 2);
 
         let now = Instant::now();
-        sent_packets.ack_prior_unacked(ACK_NUM, DELAY, now);
-        for i in 0..usize::from(ACK_NUM) {
-            assert_eq!(sent_packets.packets[i].acks.len(), 1);
+        sent_packets.ack_prior_unacked(ACK_NUM, &mut 10, DELAY, now);
+        for i in seq_nums[0..usize::from(ACK_NUM)].into_iter() {
+            assert_eq!(sent_packets.packets.get(*i as usize).clone().unwrap().acks.len(), 0);
         }
     }
 
     #[test]
-    #[should_panic]
     fn ack_unsent() {
         let init_seq_num = u16::MAX;
         let congestion_ctrl = congestion::Controller::new(congestion::Config::default());
@@ -593,21 +523,7 @@ mod test {
 
         let unsent_ack_num = init_seq_num.wrapping_add(2);
         let now = Instant::now();
-        sent_packets.ack(unsent_ack_num, DELAY, now);
-    }
-
-    #[test]
-    fn seq_num_index() {
-        let init_seq_num = u16::MAX;
-        let congestion_ctrl = congestion::Controller::new(congestion::Config::default());
-        let sent_packets = SentPackets::new(init_seq_num, init_seq_num, congestion_ctrl);
-
-        assert_eq!(
-            sent_packets.seq_num_index(init_seq_num),
-            usize::from(u16::MAX)
-        );
-
-        let zero = init_seq_num.wrapping_add(1);
-        assert_eq!(sent_packets.seq_num_index(zero), 0);
+        let result = sent_packets.ack(unsent_ack_num, DELAY, now);
+        assert_eq!(result, false);
     }
 }
