@@ -1,14 +1,9 @@
-use std::time;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Returns the UNIX timestamp truncated to a `u32`.
 pub fn now_micros() -> u32 {
-    let t = time::SystemTime::now()
-        .duration_since(time::UNIX_EPOCH)
-        .unwrap_or_else(|e| e.duration());
-    (t.as_secs().wrapping_mul(1_000_000) as u32)
-        .wrapping_add(t.subsec_micros())
-        .into()
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+    now.as_micros() as u32
 }
 
 /// Returns the amount of time elapsed between `earlier_micros` and `later_micros`.
