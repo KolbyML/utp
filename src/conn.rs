@@ -679,7 +679,7 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
         if packet.ts_micros() == 0 {
             self.peer_ts_diff = Duration::from_secs(0);
         } else {
-            self.peer_ts_diff = Duration::from_micros((now_micros - packet.ts_micros()) as u64);
+            self.peer_ts_diff = Duration::from_micros((now_micros.wrapping_sub(packet.ts_micros())) as u64);
         }
 
         match packet.packet_type() {
