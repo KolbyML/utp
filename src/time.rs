@@ -3,7 +3,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Returns the UNIX timestamp truncated to a `u32`.
 pub fn now_micros() -> u32 {
-    time::SystemTime::now()
+    let t = time::SystemTime::now()
         .duration_since(time::UNIX_EPOCH)
         .unwrap_or_else(|e| e.duration());
     (t.as_secs().wrapping_mul(1_000_000) as u32)
