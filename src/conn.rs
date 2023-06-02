@@ -676,7 +676,8 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
         // machine, then we could end up with large (inaccurate) diffs. Use the max idle timeout as
         // an upper bound on the possible diff. If the diff exceeds the bound, then assume the
         // remote clock is behind the local clock and use a diff of 1s.
-        let peer_ts_diff = crate::time::duration_between(now_micros, packet.ts_micros());
+        let peer_ts_diff = crate::time::duration_between(packet.ts_micros(), now_micros );
+        tracing::warn!("{} ::: {}", packet.ts_micros(), now_micros);
         if peer_ts_diff > self.config.max_idle_timeout {
             self.peer_ts_diff = Duration::from_secs(1);
         } else {
