@@ -293,9 +293,9 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
                 }
             }
 
-            if shutting_down && !std::matches!(self.state, State::Closed { .. }) {
-                self.shutdown();
-            }
+            // if shutting_down && !std::matches!(self.state, State::Closed { .. }) {
+            //     self.shutdown();
+            // }
 
             if let State::Closed { err } = self.state {
                 tracing::debug!(?err, "uTP conn closing...");
