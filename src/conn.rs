@@ -289,7 +289,7 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
                 }
                 _ = &mut shutdown, if !shutting_down => {
                     tracing::debug!("uTP conn initiating shutdown...");
-                    shutting_down = true;
+                    shutting_down = false;
                 }
             }
 
