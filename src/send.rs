@@ -30,7 +30,7 @@ impl<const N: usize> SendBuffer<N> {
     /// Returns the number of bytes available in the buffer.
     pub fn available(&self) -> usize {
         tracing::warn!("bbkb {} :: {} :: {}", N, self.pending.iter().fold(0, |acc, x| acc + x.len()), self.offset);
-        N - self.pending.iter().fold(0, |acc, x| acc + x.len()) + self.offset
+        N + self.offset - self.pending.iter().fold(0, |acc, x| acc + x.len())
     }
 
     /// Returns `true` if the buffer is empty.
