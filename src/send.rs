@@ -45,7 +45,7 @@ impl<const N: usize> SendBuffer<N> {
             self.pending.push_back(data.to_vec());
             Ok(data.len())
         } else {
-            self.pending.push_back(data[..available].to_vec());
+            self.pending.push_back(data[..=available].to_vec());
             Ok(available)
         }
     }
