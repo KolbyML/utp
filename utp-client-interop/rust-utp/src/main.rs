@@ -57,8 +57,8 @@ async fn sender() {
 
         let mut stream = send.connect(recv_addr, conn_config).await.expect("buckets");
 
-        let data = vec![0x48; 1000];
-        for i in 1..1000{
+        let data = vec![0x48; 699];
+        for i in 1..30000 {
             let n = stream.write(&data).await.unwrap();
         }
 
