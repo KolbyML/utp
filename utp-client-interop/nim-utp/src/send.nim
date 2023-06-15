@@ -40,10 +40,13 @@ when isMainModule:
 
   doAssert(soc.numPacketsInOutGoingBuffer() == 0)
 
-  let helloUtp = "Hello from nim implementation"
+  var helloUtp = "H"
+  for i in countup(1, 448):
+    helloUtp.add("H")
   let bytes = helloUtp.toBytes()
 
-  discard waitFor soc.write(bytes)
+  for i in countup(1, 500):
+    discard waitFor soc.write(bytes)
 
   waitFor(sleepAsync(milliseconds(1000)))
 
