@@ -112,6 +112,7 @@ impl SentPackets {
         len: u32,
         now: Instant,
     ) {
+        tracing::warn!("kkakddd {}" self.packets.len());
         let index = self.seq_num_index(seq_num);
         let is_retransmission = index < self.packets.len();
 
