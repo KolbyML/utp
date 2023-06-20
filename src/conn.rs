@@ -676,7 +676,7 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
              0
         } else {
             now_micros.wrapping_sub(packet.ts_micros())
-        }
+        };
 
         match packet.packet_type() {
             PacketType::Syn => self.on_syn(packet.seq_num()),
