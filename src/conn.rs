@@ -672,6 +672,7 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
         let now_micros = crate::time::now_micros();
         self.peer_recv_window = packet.window_size();
 
+        tracing::debug!("bug attack {} {}", now_micros, packet.ts_micros());
         self.peer_ts_diff = if packet.ts_micros() == 0 {
              Duration::from_micros(0)
         } else {
