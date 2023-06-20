@@ -673,9 +673,9 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
         self.peer_recv_window = packet.window_size();
 
         self.peer_ts_diff = if packet.ts_micros() == 0 {
-             0
+             Duration::from_micros(0)
         } else {
-            now_micros.wrapping_sub(packet.ts_micros())
+            Duration::from_micros(now_micros.wrapping_sub(packet.ts_micros()))
         };
 
         match packet.packet_type() {
