@@ -314,7 +314,8 @@ fn compute_max_window_size_adjustment(
     // The base delay adjustment should not panic because the base delay is non-negative and
     // should not be larger than the current delay.
     let delay_micros = i64::try_from(packet_delay_micros - base_delay_micros).unwrap();
-
+    tracing::debug!("bobcat {} {} {}", delay_micros, packet_delay_micros, base_delay_micros);
+    
     let off_target_micros = i64::from(target_delay_micros) - delay_micros;
     let delay_factor = (off_target_micros as f64) / f64::from(target_delay_micros);
     let window_factor = f64::from(packet_size_bytes) / f64::from(window_size_bytes);
