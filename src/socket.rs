@@ -124,6 +124,8 @@ where
                                         packet = ?packet.packet_type(),
                                         seq = %packet.seq_num(),
                                         ack = %packet.ack_num(),
+                                        init_cid = ?init_cid,
+                                        acc_cid = ?acc_cid,
                                         "received uTP packet for non-existing conn"
                                     );
                                 }
@@ -253,6 +255,7 @@ where
         let (events_tx, events_rx) = mpsc::unbounded_channel();
 
         {
+            tracing::debug!("new log that writes out cid here type 2: {:?}", cid.clone());
             self.conns.write().unwrap().insert(cid.clone(), events_tx);
         }
 
@@ -288,6 +291,7 @@ where
         let (events_tx, events_rx) = mpsc::unbounded_channel();
 
         {
+            tracing::debug!("new log that writes out cid here type 1: {:?}", cid.clone());
             self.conns.write().unwrap().insert(cid.clone(), events_tx);
         }
 
