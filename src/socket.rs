@@ -69,6 +69,7 @@ where
             let mut buf = [0; MAX_UDP_PAYLOAD_SIZE];
             loop {
                 tokio::select! {
+                    biased;
                     Ok((n, src)) = socket.recv_from(&mut buf) => {
                         let packet = match Packet::decode(&buf[..n]) {
                             Ok(pkt) => pkt,
@@ -131,8 +132,6 @@ where
                             },
                         }
                     }
-                }
-                tokio::select! {
                     Some((accept, cid)) = accepts_rx.recv(), if !incoming_conns.is_empty() => {
                         let (cid, syn) = match cid {
                             // If a CID was given, then check for an incoming connection with that
@@ -179,8 +178,6 @@ where
                             Self::await_connected(stream, accept, connected_rx).await
                         });
                     }
-                }
-                tokio::select! {
                     Some(event) = socket_event_rx.recv() => {
                         match event {
                             SocketEvent::Outgoing((packet, dst)) => {
@@ -313,8 +310,8 @@ where
                 tracing::error!(%err, "failed to open connection with {cid:?}");
                 Err(err)
             }
-            Err(err) => {
-                tracing::error!(%err, "2failed to open connection with {cid:?}");
+            Err(_) => {
+                tracing::error!("failed to open connection with {cid:?}");
                 Err(io::Error::from(io::ErrorKind::TimedOut))
             }
         }
