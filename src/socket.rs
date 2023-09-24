@@ -69,7 +69,7 @@ where
             let mut buf = [0; MAX_UDP_PAYLOAD_SIZE];
             loop {
                 tokio::select! {
-                    biased;
+                    // biased;
                     Ok((n, src)) = socket.recv_from(&mut buf) => {
                         let packet = match Packet::decode(&buf[..n]) {
                             Ok(pkt) => pkt,
