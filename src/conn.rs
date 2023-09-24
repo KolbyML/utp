@@ -231,8 +231,8 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
                 self.socket_events
                     .send(SocketEvent::Outgoing((syn.clone(), self.cid.peer.clone())))
                     .unwrap();
-                self.unacked
-                    .insert_at(syn_seq_num, syn, self.config.initial_timeout);
+                // self.unacked
+                //     .insert_at(syn_seq_num, syn, self.config.initial_timeout);
 
                 self.endpoint = Endpoint::Initiator((syn_seq_num, 1));
             }
