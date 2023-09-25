@@ -8,27 +8,12 @@ pub trait ConnectionPeer: Clone + Debug + Eq + Hash + PartialEq + Send + Sync {}
 
 impl ConnectionPeer for SocketAddr {}
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
 pub struct ConnectionId<P> {
     pub send: u16,
     pub recv: u16,
     pub peer: P,
 }
-
-impl<P> Hash for ConnectionId<P> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.send.hash(state);
-        self.recv.hash(state);
-    }
-}
-
-impl<P> PartialEq for ConnectionId<P> {
-    fn eq(&self, other: &Self) -> bool {
-        self.send == other.send && self.recv == other.recv
-    }
-}
-
-impl<P> Eq for ConnectionId<P> {}
 
 pub trait ConnectionIdGenerator<P> {
     fn cid(&mut self, peer: P, is_initiator: bool) -> ConnectionId<P>;
