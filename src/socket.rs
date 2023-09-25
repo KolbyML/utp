@@ -82,7 +82,7 @@ where
                         let init_cid = cid_from_packet(&packet, &src, false);
                         let acc_cid = cid_from_packet(&packet, &src, true);
                         let mut conns = conns.write().unwrap();
-                        let kk = conns.keys().clone();
+                        let kk = conns.clone();
                         let conn = conns
                             .get(&acc_cid)
                             .or_else(|| conns.get(&init_cid));
