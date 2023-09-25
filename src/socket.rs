@@ -82,6 +82,7 @@ where
                         let init_cid = cid_from_packet(&packet, &src, false);
                         let acc_cid = cid_from_packet(&packet, &src, true);
                         let mut conns = conns.write().unwrap();
+                        let kk = conns.keys().clone();
                         let conn = conns
                             .get(&acc_cid)
                             .or_else(|| conns.get(&init_cid));
@@ -126,6 +127,7 @@ where
                                         ack = %packet.ack_num(),
                                         init_cid = ?init_cid,
                                         acc_cid = ?acc_cid,
+                                        keys = ?kk,
                                         "received uTP packet for non-existing conn"
                                     );
                                 }
@@ -290,10 +292,8 @@ where
         let (connected_tx, connected_rx) = oneshot::channel();
         let (events_tx, events_rx) = mpsc::unbounded_channel();
 
-        {
-            tracing::debug!("new log that writes out cid here type 1: {:?}", cid.clone());
-            self.conns.write().unwrap().insert(cid.clone(), events_tx);
-        }
+        tracing::debug!("new log that writes out cid here type 1: {:?}", cid.clone());
+        self.conns.write().unwrap().insert(cid.clone(), events_tx);
 
         let stream = UtpStream::new(
             cid.clone(),
