@@ -82,7 +82,6 @@ where
                         let init_cid = cid_from_packet(&packet, &src, false);
                         let acc_cid = cid_from_packet(&packet, &src, true);
                         let mut conns = conns.write().unwrap();
-                        let kk = conns.clone();
                         let conn = conns
                             .get(&acc_cid)
                             .or_else(|| conns.get(&init_cid));
@@ -127,7 +126,6 @@ where
                                         ack = %packet.ack_num(),
                                         init_cid = ?init_cid,
                                         acc_cid = ?acc_cid,
-                                        keys = ?kk,
                                         "received uTP packet for non-existing conn"
                                     );
                                 }
