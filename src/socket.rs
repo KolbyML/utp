@@ -145,9 +145,24 @@ where
                             "Abba 4.2"
                         );
                         let (cid, syn) = if let Some(syn) = incoming_conns.remove(&cid) {
+                            tracing::error!(
+                                %cid.send,
+                                %cid.recv,
+                                "Abba 4.2.1"
+                            );
                             (cid, syn)
                         } else {
-                            awaiting.write().unwrap().insert(cid, accept);
+                            tracing::error!(
+                                %cid.send,
+                                %cid.recv,
+                                "Abba 4.2.2"
+                            );
+                            awaiting.write().unwrap().insert(cid.clone(), accept);
+                            tracing::error!(
+                                %cid.send,
+                                %cid.recv,
+                                "Abba 4.2.3"
+                            );
                             continue;
                         };
 
