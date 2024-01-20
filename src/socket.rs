@@ -25,7 +25,8 @@ const MAX_UDP_PAYLOAD_SIZE: usize = u16::MAX as usize;
 pub struct UtpSocket<P> {
     conns: Arc<RwLock<HashMap<ConnectionId<P>, ConnChannel>>>,
     cid_gen: Mutex<StdConnectionIdGenerator<P>>,
-    accepts: mpsc::UnboundedSender<(Accept<P>, Option<ConnectionId<P>>)>,
+    accepts: mpsc::UnboundedSender<Accept<P>>,
+    accepts_with_cid: mpsc::UnboundedSender<(Accept<P>, ConnectionId<P>)>,
     socket_events: mpsc::UnboundedSender<SocketEvent<P>>,
 }
 
@@ -57,11 +58,13 @@ where
 
         let (socket_event_tx, mut socket_event_rx) = mpsc::unbounded_channel();
         let (accepts_tx, mut accepts_rx) = mpsc::unbounded_channel();
+        let (accepts_with_cid_tx, mut accepts_with_cid_rx) = mpsc::unbounded_channel();
 
         let utp = Self {
             conns: Arc::clone(&conns),
             cid_gen,
             accepts: accepts_tx,
+            accepts_with_cid: accepts_with_cid_tx,
             socket_events: socket_event_tx.clone(),
         };
 
@@ -135,37 +138,66 @@ where
                             },
                         }
                     }
-                    Some((accept, cid)) = accepts_rx.recv(), if !incoming_conns.is_empty() => {
+                    Some((accept, cid)) = accepts_with_cid_rx.recv() => {
                         tracing::error!(
-                            ?cid,
-                            "Abba 4.1"
+                            %cid.send,
+                            %cid.recv,
+                            "Abba 4.2"
                         );
-                        let (cid, syn) = match cid {
-                            // If a CID was given, then check for an incoming connection with that
-                            // CID. If one is found, then use that connection. Otherwise, add the
-                            // CID to the awaiting connections.
-                            Some(cid) => {
-                                tracing::error!(
-                                    %cid.send,
-                                    %cid.recv,
-                                    "Abba 4.2"
-                                );
-                                if let Some(syn) = incoming_conns.remove(&cid) {
-                                    (cid, syn)
-                                } else {
-                                    awaiting.write().unwrap().insert(cid, accept);
-                                    continue;
-                                }
-                            }
-                            // If a CID was not given, then pull an incoming connection, and use
-                            // that connection's CID. An incoming connection is known to exist
-                            // because of the condition in the `select` arm.
-                            None => {
-                                let cid = incoming_conns.keys().next().unwrap().clone();
-                                let syn = incoming_conns.remove(&cid).unwrap();
-                                (cid, syn)
-                            }
+                        let (cid, syn) = if let Some(syn) = incoming_conns.remove(&cid) {
+                            (cid, syn)
+                        } else {
+                            awaiting.write().unwrap().insert(cid, accept);
+                            continue;
                         };
+
+                        tracing::error!(
+                            %cid.send,
+                            %cid.recv,
+                            "Abba 4.3"
+                        );
+
+                        let (connected_tx, connected_rx) = oneshot::channel();
+                        let (events_tx, events_rx) = mpsc::unbounded_channel();
+                        tracing::error!(
+                            %cid.send,
+                            %cid.recv,
+                            "Abba 4.4"
+                        );
+                        {
+                            conns
+                                .write()
+                                .unwrap()
+                                .insert(cid.clone(), events_tx);
+                        }
+                        tracing::error!(
+                            %cid.send,
+                            %cid.recv,
+                            "Abba 4.5"
+                        );
+                        let stream = UtpStream::new(
+                            cid.clone(),
+                            accept.config,
+                            Some(syn),
+                            socket_event_tx.clone(),
+                            events_rx,
+                            connected_tx,
+                        );
+                        tracing::error!(
+                            %cid.send,
+                            %cid.recv,
+                            "Abba 4.6"
+                        );
+                        tokio::spawn(async move {
+                            Self::await_connected(cid.send, stream, accept, connected_rx).await
+                        });
+                    }
+                    Some(accept) = accepts_rx.recv(), if !incoming_conns.is_empty() => {
+
+                        let cid = incoming_conns.keys().next().unwrap().clone();
+                        let syn = incoming_conns.remove(&cid).unwrap();
+
+
 
                         tracing::error!(
                             %cid.send,
@@ -252,7 +284,7 @@ where
             config,
         };
         self.accepts
-            .send((accept, None))
+            .send(accept)
             .map_err(|_| io::Error::from(io::ErrorKind::NotConnected))?;
         match stream_rx.await {
             Ok(stream) => Ok(stream?),
@@ -280,8 +312,8 @@ where
             %cid.recv,
             "Abba 3.2"
         );
-        self.accepts
-            .send((accept, Some(cid.clone())))
+        self.accepts_with_cid
+            .send((accept, cid.clone()))
             .map_err(|_| io::Error::from(io::ErrorKind::NotConnected))?;
         tracing::error!(
             %cid.send,
