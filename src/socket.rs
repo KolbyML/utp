@@ -115,7 +115,7 @@ where
                                         );
 
                                         tokio::spawn(async move {
-                                            Self::await_connected(stream, accept, connected_rx).await
+                                            Self::await_connected(0, stream, accept, connected_rx).await
                                         });
                                     } else {
                                         incoming_conns.insert(cid, packet);
@@ -136,11 +136,20 @@ where
                         }
                     }
                     Some((accept, cid)) = accepts_rx.recv(), if !incoming_conns.is_empty() => {
+                        tracing::error!(
+                            ?cid,
+                            "Abba 4.1"
+                        );
                         let (cid, syn) = match cid {
                             // If a CID was given, then check for an incoming connection with that
                             // CID. If one is found, then use that connection. Otherwise, add the
                             // CID to the awaiting connections.
                             Some(cid) => {
+                                tracing::error!(
+                                    %cid.send,
+                                    %cid.recv,
+                                    "Abba 4.2"
+                                );
                                 if let Some(syn) = incoming_conns.remove(&cid) {
                                     (cid, syn)
                                 } else {
@@ -158,27 +167,45 @@ where
                             }
                         };
 
+                        tracing::error!(
+                            %cid.send,
+                            %cid.recv,
+                            "Abba 4.3"
+                        );
+
                         let (connected_tx, connected_rx) = oneshot::channel();
                         let (events_tx, events_rx) = mpsc::unbounded_channel();
-
+                        tracing::error!(
+                            %cid.send,
+                            %cid.recv,
+                            "Abba 4.4"
+                        );
                         {
                             conns
                                 .write()
                                 .unwrap()
                                 .insert(cid.clone(), events_tx);
                         }
-
+                        tracing::error!(
+                            %cid.send,
+                            %cid.recv,
+                            "Abba 4.5"
+                        );
                         let stream = UtpStream::new(
-                            cid,
+                            cid.clone(),
                             accept.config,
                             Some(syn),
                             socket_event_tx.clone(),
                             events_rx,
                             connected_tx,
                         );
-
+                        tracing::error!(
+                            %cid.send,
+                            %cid.recv,
+                            "Abba 4.6"
+                        );
                         tokio::spawn(async move {
-                            Self::await_connected(stream, accept, connected_rx).await
+                            Self::await_connected(cid.send, stream, accept, connected_rx).await
                         });
                     }
                     Some(event) = socket_event_rx.recv() => {
@@ -238,14 +265,29 @@ where
         cid: ConnectionId<P>,
         config: ConnectionConfig,
     ) -> io::Result<UtpStream<P>> {
+        tracing::error!(
+            %cid.send,
+            %cid.recv,
+            "Abba 3.1"
+        );
         let (stream_tx, stream_rx) = oneshot::channel();
         let accept = Accept {
             stream: stream_tx,
             config,
         };
+        tracing::error!(
+            %cid.send,
+            %cid.recv,
+            "Abba 3.2"
+        );
         self.accepts
-            .send((accept, Some(cid)))
+            .send((accept, Some(cid.clone())))
             .map_err(|_| io::Error::from(io::ErrorKind::NotConnected))?;
+        tracing::error!(
+            %cid.send,
+            %cid.recv,
+            "Abba 3.3"
+        );
         match stream_rx.await {
             Ok(stream) => Ok(stream?),
             Err(..) => Err(io::Error::from(io::ErrorKind::TimedOut)),
@@ -319,18 +361,35 @@ where
     }
 
     async fn await_connected(
+        send: u16,
         stream: UtpStream<P>,
         accept: Accept<P>,
         connected: oneshot::Receiver<io::Result<()>>,
     ) {
+        tracing::error!(
+            %send,
+            "Abba 5.1"
+        );
         match connected.await {
             Ok(Ok(..)) => {
+                tracing::error!(
+                    %send,
+                    "Abba 5.2"
+                );
                 let _ = accept.stream.send(Ok(stream));
             }
             Ok(Err(err)) => {
+                tracing::error!(
+                    %send,
+                    "Abba 5.3"
+                );
                 let _ = accept.stream.send(Err(err));
             }
             Err(..) => {
+                tracing::error!(
+                    %send,
+                    "Abba 5.4"
+                );
                 let _ = accept
                     .stream
                     .send(Err(io::Error::from(io::ErrorKind::ConnectionAborted)));

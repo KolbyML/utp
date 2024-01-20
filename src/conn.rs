@@ -198,6 +198,12 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
             }
         };
 
+        tracing::error!(
+            %cid.send,
+            %cid.recv,
+            "Abba 21.1"
+        );
+
         Self {
             state: State::Connecting(Some(connected)),
             cid,
