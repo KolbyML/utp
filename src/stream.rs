@@ -44,6 +44,11 @@ where
             socket_events,
             reads_tx,
         );
+        tracing::error!(
+            %cid.send,
+            %cid.recv,
+            "Abba 20.1"
+        );
         let conn_handle = tokio::spawn(async move {
             conn.event_loop(stream_events, writes_rx, shutdown_rx)
                 .instrument(tracing::info_span!("uTP", send = cid.send, recv = cid.recv))

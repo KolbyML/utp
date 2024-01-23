@@ -228,7 +228,11 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
         mut shutdown: oneshot::Receiver<()>,
     ) -> io::Result<()> {
         tracing::debug!("uTP conn starting... {:?}", self.cid.peer);
-
+        tracing::error!(
+            %self.cid.send,
+            %self.cid.recv,
+            "Abba 30.1"
+        );
         // If we are the initiating endpoint, then send the SYN. If we are the accepting endpoint,
         // then send the SYN-ACK.
         match self.endpoint {
@@ -243,23 +247,40 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
                 self.endpoint = Endpoint::Initiator((syn_seq_num, 1));
             }
             Endpoint::Acceptor((syn, syn_ack)) => {
+                tracing::error!(
+                    %self.cid.send,
+                    %self.cid.recv,
+                    "Abba 30.2"
+                );
                 let state = self.state_packet().unwrap();
                 self.socket_events
                     .send(SocketEvent::Outgoing((state, self.cid.peer.clone())))
                     .unwrap();
-
+                tracing::error!(
+                    %self.cid.send,
+                    %self.cid.recv,
+                    "Abba 30.3"
+                );
                 let recv_buf = ReceiveBuffer::new(syn);
                 let send_buf = SendBuffer::new();
 
                 let congestion_ctrl = congestion::Controller::new(self.config.into());
-
+                tracing::error!(
+                    %self.cid.send,
+                    %self.cid.recv,
+                    "Abba 30.4"
+                );
                 // NOTE: We initialize with the sequence number of the SYN-ACK minus 1 because the
                 // SYN-ACK contains the incremented sequence number (i.e. the next sequence
                 // number). This is consistent with the reference implementation and the libtorrent
                 // implementation where STATE packets set the sequence number to the next sequence
                 // number.
                 let sent_packets = SentPackets::new(syn_ack.wrapping_sub(1), congestion_ctrl);
-
+                tracing::error!(
+                    %self.cid.send,
+                    %self.cid.recv,
+                    "Abba 30.5"
+                );
                 // The connection must be in the `Connecting` state. We optimistically mark the
                 // connection `Established` here. This enables the accepting endpoint to send DATA
                 // packets before receiving any from the initiator.
@@ -270,7 +291,11 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
                 } else {
                     panic!("connection in invalid state prior to event loop beginning");
                 }
-
+                tracing::error!(
+                    %self.cid.send,
+                    %self.cid.recv,
+                    "Abba 30.6"
+                );
                 self.state = State::Established {
                     recv_buf,
                     send_buf,
@@ -278,7 +303,11 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
                 };
             }
         }
-
+        tracing::error!(
+            %self.cid.send,
+            %self.cid.recv,
+            "Abba 30.7"
+        );
         let mut shutting_down = false;
         let idle_timeout = tokio::time::sleep(self.config.max_idle_timeout);
         tokio::pin!(idle_timeout);
