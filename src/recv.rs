@@ -108,17 +108,13 @@ impl<const N: usize> ReceiveBuffer<N> {
         }
 
         // If there are pending packets, then the data for `ack_num + 1` must be missing.
-        let mut next = self.ack_num().wrapping_add(2);
+        let last_ack = self.ack_num().wrapping_add(2);
 
-        let mut acked = Vec::new();
-        for seq_num in self.pending.keys() {
-            while *seq_num != next {
-                acked.push(false);
-                next = next.wrapping_add(1);
+        let mut acked = vec![false; self.pending.len()];
+        for i in 0..self.pending.len() {
+            if self.pending.get(&last_ack.wrapping_add(i as u16)).is_some() {
+                acked[i] = true;
             }
-
-            acked.push(true);
-            next = next.wrapping_add(1);
         }
 
         Some(SelectiveAck::new(acked))
@@ -292,5 +288,33 @@ mod test {
 
         let selective_ack = buf.selective_ack();
         assert!(selective_ack.is_none());
+    }
+
+    #[test]
+    fn selective_ack_overflow() {
+        let init_seq_num = u16::MAX - 2;
+        let mut buf = ReceiveBuffer::<SIZE>::new(init_seq_num);
+
+        let selective_ack = buf.selective_ack();
+        assert!(selective_ack.is_none());
+
+        const DATA_LEN: usize = 64;
+        let data = vec![0xef; DATA_LEN];
+
+        // Write out-of-order packet.
+        let seq_num = init_seq_num.wrapping_add(2);
+        buf.write(&data, seq_num);
+        // Write overflow packet, which is at seq_num 0.
+        let seq_num = init_seq_num.wrapping_add(3);
+        buf.write(&data, seq_num);
+
+        // Selective ACK should mark received packets as set.
+        // Selective ACK begins with ack_num + 2, onwards.
+        // Hence since we received packets 65535 and 0, we should have 2 packets set, in the respective positions.
+        let selective_ack = buf.selective_ack().unwrap();
+        let mut acked = vec![false; 32];
+        acked[0] = true;
+        acked[1] = true;
+        assert_eq!(selective_ack.acked(), acked);
     }
 }
