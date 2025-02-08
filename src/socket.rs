@@ -349,6 +349,7 @@ where
         config: ConnectionConfig,
     ) -> io::Result<UtpStream<P>> {
         if self.conns.read().unwrap().contains_key(&cid) {
+            error!("cc connection ID unavailable");
             return Err(io::Error::new(
                 io::ErrorKind::Other,
                 "connection ID unavailable".to_string(),
@@ -427,6 +428,7 @@ where
         socket_event_tx: UnboundedSender<SocketEvent<P>>,
     ) {
         if conns.read().unwrap().contains_key(&cid) {
+            error!("aa connection ID unavailable");
             let _ = accept.stream.send(Err(io::Error::new(
                 io::ErrorKind::Other,
                 "connection ID unavailable".to_string(),
