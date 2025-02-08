@@ -167,7 +167,7 @@ where
                                         peer_init_cid = ?peer_init_cid,
                                         we_init_cid = ?we_init_cid,
                                         acc_cid = ?acc_cid,
-                                        "received uTP packet for non-existing conn"
+                                        "received uTP packet for non-existing conn {:?}", conn
                                     );
                                     // don't send a reset if we are receiving a reset
                                     if packet.packet_type() != PacketType::Reset {
