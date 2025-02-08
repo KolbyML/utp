@@ -1058,7 +1058,7 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
     }
 
     fn reset(&mut self, err: Error) {
-        tracing::warn!(?err, "resetting connection: {err}");
+        tracing::error!(?err, "resetting connection: {err}");
         // If we already sent our fin and got a reset we assume the receiver already got our fin and has successfully closed their connection.
         // hence mark this as a successful close.
         if let State::Connected {
