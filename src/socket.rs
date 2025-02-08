@@ -46,7 +46,7 @@ const CID_GENERATION_TRY_WARNING_COUNT: usize = 10;
 const AWAITING_CONNECTION_TIMEOUT: Duration = Duration::from_secs(20);
 
 pub struct UtpSocket<P: ConnectionPeer> {
-    conns: Arc<RwLock<HashMap<ConnectionId<P::Id>, (ConnChannel, bool)>>>,
+    pub conns: Arc<RwLock<HashMap<ConnectionId<P::Id>, (ConnChannel, bool)>>>,
     accepts: UnboundedSender<Accept<P>>,
     accepts_with_cid: UnboundedSender<AcceptWithCidPeer<P>>,
     socket_events: UnboundedSender<SocketEvent<P>>,
