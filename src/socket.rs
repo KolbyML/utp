@@ -349,7 +349,7 @@ where
         config: ConnectionConfig,
     ) -> io::Result<UtpStream<P>> {
         if self.conns.read().unwrap().contains_key(&cid) {
-            error!("cc connection ID unavailable");
+            error!("cc connection ID unavailable {:?} {cid:?}", self.conns);
             return Err(io::Error::new(
                 io::ErrorKind::Other,
                 "connection ID unavailable".to_string(),
