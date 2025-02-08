@@ -126,7 +126,7 @@ async fn initiate_transfer(
 
     let recv_handle = tokio::spawn(async move {
         let mut stream = recv
-            .accept_with_cid(recv_cid, Peer::new(send_addr), conn_config)
+            .accept_with_cid(recv_cid, Peer::new(send_addr), None, conn_config)
             .await
             .unwrap();
         let mut buf = vec![];
@@ -192,7 +192,7 @@ async fn test_socket_reports_two_connections() {
     let recv_one = Arc::clone(&recv);
     let recv_one_handle = tokio::spawn(async move {
         recv_one
-            .accept_with_cid(recv_one_cid, Peer::new(send_addr), conn_config)
+            .accept_with_cid(recv_one_cid, Peer::new(send_addr), None, conn_config)
             .await
             .unwrap()
     });
@@ -219,7 +219,7 @@ async fn test_socket_reports_two_connections() {
     let recv_two = Arc::clone(&recv);
     let recv_two_handle = tokio::spawn(async move {
         recv_two
-            .accept_with_cid(recv_two_cid, Peer::new(send_addr), conn_config)
+            .accept_with_cid(recv_two_cid, Peer::new(send_addr), None, conn_config)
             .await
             .unwrap()
     });

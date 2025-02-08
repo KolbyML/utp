@@ -30,7 +30,7 @@ async fn close_is_successful_when_write_completes() {
     let recv_one = Arc::clone(&recv);
     let recv_one_handle = tokio::spawn(async move {
         recv_one
-            .accept_with_cid(recv_cid, Peer::new_id(recv_cid.peer_id), conn_config)
+            .accept_with_cid(recv_cid, Peer::new_id(recv_cid.peer_id), None, conn_config)
             .await
             .unwrap()
     });
@@ -101,7 +101,7 @@ async fn close_errors_if_all_packets_dropped() {
     let recv_one = Arc::clone(&recv);
     let recv_one_handle = tokio::spawn(async move {
         recv_one
-            .accept_with_cid(recv_cid, Peer::new_id(recv_cid.peer_id), conn_config)
+            .accept_with_cid(recv_cid, Peer::new_id(recv_cid.peer_id), None, conn_config)
             .await
             .unwrap()
     });
@@ -179,7 +179,7 @@ async fn close_succeeds_if_only_fin_ack_dropped() {
     let recv_one = Arc::clone(&recv);
     let recv_one_handle = tokio::spawn(async move {
         recv_one
-            .accept_with_cid(recv_cid, Peer::new_id(recv_cid.peer_id), conn_config)
+            .accept_with_cid(recv_cid, Peer::new_id(recv_cid.peer_id), None, conn_config)
             .await
             .unwrap()
     });

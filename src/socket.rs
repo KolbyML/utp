@@ -8,7 +8,7 @@ use delay_map::HashMapDelay;
 use futures::StreamExt;
 use rand::{thread_rng, Rng};
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::{mpsc, oneshot};
 use tracing::error;
 
@@ -31,6 +31,7 @@ struct AcceptWithCidPeer<P: ConnectionPeer> {
     cid: ConnectionId<P::Id>,
     peer: Peer<P>,
     accept: Accept<P>,
+    event_rx: Option<UnboundedReceiver<StreamEvent>>,
 }
 
 const MAX_UDP_PAYLOAD_SIZE: usize = u16::MAX as usize;
@@ -179,13 +180,13 @@ where
                             continue;
                         };
                         peer.consolidate(accept_with_cid.peer);
-                        Self::select_accept_helper(accept_with_cid.cid, peer, syn, conns.clone(), accept_with_cid.accept, socket_event_tx.clone());
+                        Self::select_accept_helper(accept_with_cid.cid, peer, syn, conns.clone(), accept_with_cid.accept, accept_with_cid.event_rx, socket_event_tx.clone());
                     }
                     Some(accept) = accepts_rx.recv(), if !incoming_conns.is_empty() => {
                         let cid = incoming_conns.keys().next().expect("at least one incoming connection");
                         let cid = cid.clone();
                         let (peer, packet) = incoming_conns.remove(&cid).expect("to delete incoming connection");
-                        Self::select_accept_helper(cid, peer, packet, conns.clone(), accept, socket_event_tx.clone());
+                        Self::select_accept_helper(cid, peer, packet, conns.clone(), accept, None, socket_event_tx.clone());
                     }
                     Some(event) = socket_event_rx.recv() => {
                         match event {
@@ -233,7 +234,7 @@ where
         &self,
         peer_id: P::Id,
         is_initiator: bool,
-        event_tx: Option<UnboundedSender<StreamEvent>>,
+        event_tx: UnboundedSender<StreamEvent>,
     ) -> ConnectionId<P::Id> {
         let mut cid = ConnectionId {
             send: 0,
@@ -254,18 +255,27 @@ where
             cid.send = send;
             cid.recv = recv;
 
-            if !self.conns.read().unwrap().contains_key(&cid) {
-                if let Some(event_tx) = event_tx {
-                    self.conns.write().unwrap().insert(cid.clone(), event_tx);
+            {
+                let mut conns = self.conns.write().expect("conns lock is poisoned");
+                if !conns.contains_key(&cid) {
+                    conns.insert(cid.clone(), event_tx);
+                    return cid;
                 }
-                return cid;
             }
             generation_attempt_count += 1;
         }
     }
 
-    pub fn cid(&self, peer_id: P::Id, is_initiator: bool) -> ConnectionId<P::Id> {
-        self.generate_cid(peer_id, is_initiator, None)
+    pub fn cid(
+        &self,
+        peer_id: P::Id,
+        is_initiator: bool,
+    ) -> (ConnectionId<P::Id>, UnboundedReceiver<StreamEvent>) {
+        let (events_tx, events_rx) = mpsc::unbounded_channel();
+        (
+            self.generate_cid(peer_id, is_initiator, events_tx),
+            events_rx,
+        )
     }
 
     /// Returns the number of connections currently open, both inbound and outbound.
@@ -296,6 +306,7 @@ where
         &self,
         cid: ConnectionId<P::Id>,
         peer: Peer<P>,
+        event_rx: Option<UnboundedReceiver<StreamEvent>>,
         config: ConnectionConfig,
     ) -> io::Result<UtpStream<P>> {
         let (stream_tx, stream_rx) = oneshot::channel();
@@ -306,6 +317,7 @@ where
                 stream: stream_tx,
                 config,
             },
+            event_rx,
         };
         self.accepts_with_cid
             .send(accept)
@@ -323,7 +335,7 @@ where
     ) -> io::Result<UtpStream<P>> {
         let (connected_tx, connected_rx) = oneshot::channel();
         let (events_tx, events_rx) = mpsc::unbounded_channel();
-        let cid = self.generate_cid(peer.id().clone(), true, Some(events_tx));
+        let cid = self.generate_cid(peer.id().clone(), true, events_tx);
 
         let stream = UtpStream::new(
             cid,
@@ -425,39 +437,27 @@ where
         syn: Packet,
         conns: Arc<RwLock<HashMap<ConnectionId<P::Id>, ConnChannel>>>,
         accept: Accept<P>,
+        events_rx: Option<UnboundedReceiver<StreamEvent>>,
         socket_event_tx: UnboundedSender<SocketEvent<P>>,
     ) {
-        if conns.read().unwrap().contains_key(&cid) {
-            error!("aa connection ID unavailable");
-            let _ = accept.stream.send(Err(io::Error::new(
-                io::ErrorKind::Other,
-                "connection ID unavailable".to_string(),
-            )));
-            return;
-        }
+        let events_rx = if let Some(events_rx) = events_rx {
+            events_rx
+        } else {
+            if conns.read().unwrap().contains_key(&cid) {
+                error!("aa connection ID unavailable");
+                let _ = accept.stream.send(Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "connection ID unavailable".to_string(),
+                )));
+                return;
+            }
+            let (events_tx, events_rx) = mpsc::unbounded_channel();
+
+            conns.write().unwrap().insert(cid.clone(), events_tx);
+            events_rx
+        };
 
         let (connected_tx, connected_rx) = oneshot::channel();
-        let (events_tx, events_rx) = mpsc::unbounded_channel();
-
-        {
-            if conns
-                .write()
-                .unwrap()
-                .insert(cid.clone(), events_tx)
-                .is_some()
-            {
-                error!("failed to insert connection into conns");
-                error!("failed to insert connection into conns");
-                error!("failed to insert connection into conns");
-                error!("failed to insert connection into conns");
-                error!("failed to insert connection into conns");
-                error!("failed to insert connection into conns");
-                error!("failed to insert connection into conns");
-                error!("failed to insert connection into conns");
-                error!("failed to insert connection into conns");
-                error!("failed to insert connection into conns");
-            }
-        }
 
         let stream = UtpStream::new(
             cid,
