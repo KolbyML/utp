@@ -113,7 +113,7 @@ where
                             .or_else(|| conns.get(&peer_init_cid));
                         warn!("conn: {:?} {:?} {:?}", conn, packet, awaiting.get(&acc_cid).is_some());
                         match (conn, packet.packet_type()) {
-                            (Some(conn), PacketType::Data | PacketType::Syn | PacketType::State | PacketType::Reset) => {
+                            (Some(conn), PacketType::Data | PacketType::Fin | PacketType::State | PacketType::Reset) => {
                                 let _ = conn.send(StreamEvent::Incoming(packet));
                             }
                             _ => {
