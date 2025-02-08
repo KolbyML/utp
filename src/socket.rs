@@ -159,7 +159,7 @@ where
                                         incoming_conns.insert(cid, (peer, packet));
                                     }
                                 } else {
-                                    tracing::debug!(
+                                    tracing::error!(
                                         cid = %packet.conn_id(),
                                         packet = ?packet.packet_type(),
                                         seq = %packet.seq_num(),
