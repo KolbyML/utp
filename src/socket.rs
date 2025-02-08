@@ -126,9 +126,16 @@ where
                                         peer.consolidate(accept_with_cid.peer);
 
                                         let (connected_tx, connected_rx) = oneshot::channel();
-                                        let (events_tx, events_rx) = mpsc::unbounded_channel();
 
-                                        conns.insert(cid.clone(), events_tx);
+                                        let events_rx = match accept_with_cid.event_rx {
+                                            Some(events_rx) => events_rx,
+                                            None => {
+                                                let (events_tx, events_rx) = mpsc::unbounded_channel();
+                                                conns.insert(cid.clone(), events_tx);
+                                                events_rx
+                                            },
+                                        };
+
 
                                         let stream = UtpStream::new(
                                             cid,
@@ -213,6 +220,9 @@ where
                         // accept_with_cid didn't receive an inbound connection within the timeout period
                         // log it and return a timeout error
                         tracing::debug!(%cid.send, %cid.recv, "accept_with_cid timed out");
+                        if let Some(_) = accept_with_cid.event_rx {
+                            conns.write().unwrap().remove(&cid);
+                        }
                         let _ = accept_with_cid.accept
                             .stream
                             .send(Err(io::Error::from(io::ErrorKind::TimedOut)));
