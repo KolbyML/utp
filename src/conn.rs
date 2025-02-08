@@ -1049,7 +1049,7 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
     }
 
     fn on_reset(&mut self) {
-        tracing::error!("RESET from remote {:?}", self.state);
+        tracing::error!("RESET from remote {:?} {:?}", self.state, self.cid);
 
         // If the connection is not already closed or reset, then reset the connection.
         if !std::matches!(self.state, State::Closed { .. }) {
