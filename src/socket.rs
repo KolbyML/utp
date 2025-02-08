@@ -10,7 +10,7 @@ use rand::{thread_rng, Rng};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::{mpsc, oneshot};
-use tracing::error;
+use tracing::{error, warn};
 
 use crate::cid::ConnectionId;
 use crate::conn::ConnectionConfig;
@@ -111,6 +111,7 @@ where
                             .get(&acc_cid)
                             .or_else(|| conns.get(&we_init_cid))
                             .or_else(|| conns.get(&peer_init_cid));
+                        warn!("conn: {:?} {:?}", conn, packet);
                         match conn {
                             Some(conn) => {
                                 let _ = conn.send(StreamEvent::Incoming(packet));
