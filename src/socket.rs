@@ -125,6 +125,7 @@ where
                                     // connection to the incoming connections.
                                     if let Some(accept_with_cid) = awaiting.remove(&cid) {
                                         peer.consolidate(accept_with_cid.peer);
+                                        warn!("accept_with_cid: {:?}", cid);
 
                                         let (connected_tx, connected_rx) = oneshot::channel();
 
