@@ -46,7 +46,7 @@ const CID_GENERATION_TRY_WARNING_COUNT: usize = 10;
 const AWAITING_CONNECTION_TIMEOUT: Duration = Duration::from_secs(20);
 
 pub struct UtpSocket<P: ConnectionPeer> {
-    conns: Arc<RwLock<HashMap<ConnectionId<P::Id>, ConnChannel>>>,
+    conns: Arc<RwLock<HashMap<ConnectionId<P::Id>, (ConnChannel, bool)>>>,
     accepts: UnboundedSender<Accept<P>>,
     accepts_with_cid: UnboundedSender<AcceptWithCidPeer<P>>,
     socket_events: UnboundedSender<SocketEvent<P>>,
@@ -111,9 +111,8 @@ where
                             .get(&acc_cid)
                             .or_else(|| conns.get(&we_init_cid))
                             .or_else(|| conns.get(&peer_init_cid));
-                        warn!("conn: {:?} {:?} {:?}", conn, packet, awaiting.get(&acc_cid).is_some());
-                        match (conn, packet.packet_type()) {
-                            (Some(conn), PacketType::Data | PacketType::Fin | PacketType::State | PacketType::Reset) => {
+                        match conn {
+                            Some((conn, true)) => {
                                 let _ = conn.send(StreamEvent::Incoming(packet));
                             }
                             _ => {
@@ -125,15 +124,19 @@ where
                                     // connection to the incoming connections.
                                     if let Some(accept_with_cid) = awaiting.remove(&cid) {
                                         peer.consolidate(accept_with_cid.peer);
-                                        warn!("accept_with_cid: {:?}", cid);
 
                                         let (connected_tx, connected_rx) = oneshot::channel();
 
                                         let events_rx = match accept_with_cid.event_rx {
-                                            Some(events_rx) => events_rx,
+                                            Some(events_rx) => {
+                                                if let Some((_, is_initalized)) = conns.get_mut(&cid) {
+                                                    *is_initalized = true;
+                                                }
+                                                events_rx
+                                            },
                                             None => {
                                                 let (events_tx, events_rx) = mpsc::unbounded_channel();
-                                                conns.insert(cid.clone(), events_tx);
+                                                conns.insert(cid.clone(), (events_tx, true));
                                                 events_rx
                                             },
                                         };
@@ -270,7 +273,7 @@ where
             {
                 let mut conns = self.conns.write().expect("conns lock is poisoned");
                 if !conns.contains_key(&cid) {
-                    conns.insert(cid.clone(), event_tx);
+                    conns.insert(cid.clone(), (event_tx, false));
                     return cid;
                 }
             }
@@ -387,7 +390,7 @@ where
             .conns
             .write()
             .unwrap()
-            .insert(cid.clone(), events_tx)
+            .insert(cid.clone(), (events_tx, true))
             .is_some()
         {
             error!("failed to insert connection into conns");
@@ -447,7 +450,7 @@ where
         cid: ConnectionId<P::Id>,
         peer: Peer<P>,
         syn: Packet,
-        conns: Arc<RwLock<HashMap<ConnectionId<P::Id>, ConnChannel>>>,
+        conns: Arc<RwLock<HashMap<ConnectionId<P::Id>, (ConnChannel, bool)>>>,
         accept: Accept<P>,
         events_rx: Option<UnboundedReceiver<StreamEvent>>,
         socket_event_tx: UnboundedSender<SocketEvent<P>>,
@@ -465,7 +468,10 @@ where
             }
             let (events_tx, events_rx) = mpsc::unbounded_channel();
 
-            conns.write().unwrap().insert(cid.clone(), events_tx);
+            conns
+                .write()
+                .unwrap()
+                .insert(cid.clone(), (events_tx, true));
             events_rx
         };
 
@@ -536,7 +542,7 @@ fn cid_from_packet<P: ConnectionPeer>(
 impl<P: ConnectionPeer> Drop for UtpSocket<P> {
     fn drop(&mut self) {
         for conn in self.conns.read().unwrap().values() {
-            let _ = conn.send(StreamEvent::Shutdown);
+            let _ = conn.0.send(StreamEvent::Shutdown);
         }
     }
 }
