@@ -112,11 +112,11 @@ where
                             .or_else(|| conns.get(&we_init_cid))
                             .or_else(|| conns.get(&peer_init_cid));
                         warn!("conn: {:?} {:?} {:?}", conn, packet, awaiting.get(&acc_cid).is_some());
-                        match conn {
-                            Some(conn) => {
+                        match (conn, packet.packet_type()) {
+                            (Some(conn), PacketType::Data | PacketType::Syn | PacketType::State | PacketType::Reset) => {
                                 let _ = conn.send(StreamEvent::Incoming(packet));
                             }
-                            None => {
+                            _ => {
                                 if std::matches!(packet.packet_type(), PacketType::Syn) {
                                     let cid = acc_cid;
 
