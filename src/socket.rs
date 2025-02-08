@@ -10,6 +10,7 @@ use rand::{thread_rng, Rng};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::{mpsc, oneshot};
+use tracing::error;
 
 use crate::cid::ConnectionId;
 use crate::conn::ConnectionConfig;
@@ -357,8 +358,23 @@ where
         let (connected_tx, connected_rx) = oneshot::channel();
         let (events_tx, events_rx) = mpsc::unbounded_channel();
 
+        if self
+            .conns
+            .write()
+            .unwrap()
+            .insert(cid.clone(), events_tx)
+            .is_none()
         {
-            self.conns.write().unwrap().insert(cid.clone(), events_tx);
+            error!("failed to insert connection into conns");
+            error!("failed to insert connection into conns");
+            error!("failed to insert connection into conns");
+            error!("failed to insert connection into conns");
+            error!("failed to insert connection into conns");
+            error!("failed to insert connection into conns");
+            error!("failed to insert connection into conns");
+            error!("failed to insert connection into conns");
+            error!("failed to insert connection into conns");
+            error!("failed to insert connection into conns");
         }
 
         let stream = UtpStream::new(
@@ -422,7 +438,23 @@ where
         let (events_tx, events_rx) = mpsc::unbounded_channel();
 
         {
-            conns.write().unwrap().insert(cid.clone(), events_tx);
+            if conns
+                .write()
+                .unwrap()
+                .insert(cid.clone(), events_tx)
+                .is_none()
+            {
+                error!("failed to insert connection into conns");
+                error!("failed to insert connection into conns");
+                error!("failed to insert connection into conns");
+                error!("failed to insert connection into conns");
+                error!("failed to insert connection into conns");
+                error!("failed to insert connection into conns");
+                error!("failed to insert connection into conns");
+                error!("failed to insert connection into conns");
+                error!("failed to insert connection into conns");
+                error!("failed to insert connection into conns");
+            }
         }
 
         let stream = UtpStream::new(
