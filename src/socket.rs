@@ -111,7 +111,7 @@ where
                             .get(&acc_cid)
                             .or_else(|| conns.get(&we_init_cid))
                             .or_else(|| conns.get(&peer_init_cid));
-                        warn!("conn: {:?} {:?}", conn, packet);
+                        warn!("conn: {:?} {:?} {:?}", conn, packet, awaiting);
                         match conn {
                             Some(conn) => {
                                 let _ = conn.send(StreamEvent::Incoming(packet));
