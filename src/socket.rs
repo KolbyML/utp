@@ -363,7 +363,7 @@ where
             .write()
             .unwrap()
             .insert(cid.clone(), events_tx)
-            .is_none()
+            .is_some()
         {
             error!("failed to insert connection into conns");
             error!("failed to insert connection into conns");
@@ -442,7 +442,7 @@ where
                 .write()
                 .unwrap()
                 .insert(cid.clone(), events_tx)
-                .is_none()
+                .is_some()
             {
                 error!("failed to insert connection into conns");
                 error!("failed to insert connection into conns");
