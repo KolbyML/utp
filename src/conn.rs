@@ -667,10 +667,10 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
                         let seq = *syn;
                         let log_msg = format!("retrying connection, after {} attempts", *attempts);
                         match *attempts {
-                            1 => tracing::trace!(log_msg),
-                            2 => tracing::debug!(log_msg),
-                            3 => tracing::info!(log_msg),
-                            _ => tracing::warn!(log_msg),
+                            1 => tracing::error!(log_msg),
+                            2 => tracing::error!(log_msg),
+                            3 => tracing::error!(log_msg),
+                            _ => tracing::error!(log_msg),
                         }
                         *attempts += 1;
 
