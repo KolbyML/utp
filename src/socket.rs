@@ -455,7 +455,6 @@ where
         events_rx: Option<UnboundedReceiver<StreamEvent>>,
         socket_event_tx: UnboundedSender<SocketEvent<P>>,
     ) {
-        error!("select_accept_helper");
         let events_rx = if let Some(events_rx) = events_rx {
             if let Some((_, is_initalized)) = conns.write().unwrap().get_mut(&cid) {
                 *is_initalized = true;
