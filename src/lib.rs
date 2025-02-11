@@ -1,4 +1,5 @@
 pub mod cid;
+pub mod circular_buffer;
 pub mod congestion;
 pub mod conn;
 pub mod event;

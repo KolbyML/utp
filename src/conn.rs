@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 use delay_map::HashMapDelay;
 use futures::StreamExt;
 use tokio::sync::{mpsc, oneshot, Notify};
+use tracing::error;
+use tracing::info;
 
 use crate::cid::ConnectionId;
 use crate::congestion;
@@ -198,7 +200,7 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
     ) -> Self {
         let (endpoint, peer_ts_diff, peer_recv_window) = match syn {
             Some(syn) => {
-                let syn_ack = rand::random();
+                let syn_ack = 5;
                 let endpoint = Endpoint::Acceptor((syn.seq_num(), syn_ack));
 
                 let now = crate::time::now_micros();
@@ -207,7 +209,7 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
                 (endpoint, peer_ts_diff, syn.window_size())
             }
             None => {
-                let syn = rand::random();
+                let syn = 10;
                 let endpoint = Endpoint::Initiator((syn, 0));
                 (endpoint, Duration::ZERO, u32::MAX)
             }
@@ -263,12 +265,12 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
 
                 let congestion_ctrl = congestion::Controller::new(self.config.into());
 
-                // NOTE: We initialize with the sequence number of the SYN-ACK minus 1 because the
+                // NOTE: We initialize with the sequence number of the SYN-ACK because the
                 // SYN-ACK contains the incremented sequence number (i.e. the next sequence
                 // number). This is consistent with the reference implementation and the libtorrent
                 // implementation where STATE packets set the sequence number to the next sequence
                 // number.
-                let sent_packets = SentPackets::new(syn_ack.wrapping_sub(1), congestion_ctrl);
+                let sent_packets = SentPackets::new(syn_ack, congestion_ctrl);
 
                 // The connection must be in the `Connecting` state. We optimistically mark the
                 // connection `Established` here. This enables the accepting endpoint to send DATA
@@ -525,7 +527,6 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
 
         // Transmit data packets.
         // TODO: Helper for construction of DATA packet.
-        let mut seq_num = sent_packets.next_seq_num();
         let recv_window = recv_buf.available() as u32;
         let ack_num = recv_buf.ack_num();
         let selective_ack = recv_buf.selective_ack();
@@ -535,13 +536,14 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
                 self.cid.send,
                 now_micros,
                 recv_window,
-                seq_num,
+                sent_packets.next_seq_num(),
             )
             .payload(payload)
             .ts_diff_micros(self.peer_ts_diff.as_micros() as u32)
             .ack_num(ack_num)
             .selective_ack(selective_ack.clone())
             .build();
+            // info!("hi3");
             Self::transmit(
                 sent_packets,
                 &mut self.unacked,
@@ -550,7 +552,6 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
                 &self.peer,
                 now,
             );
-            seq_num = seq_num.wrapping_add(1);
         }
     }
 
@@ -728,6 +729,7 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
                     .ts_micros(now_micros)
                     .ts_diff_micros(ts_diff_micros)
                     .build();
+                // info!("hi1 {:?}", sent_packets.outgoing_packets);
                 Self::transmit(
                     sent_packets,
                     &mut self.unacked,
@@ -788,6 +790,7 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
         // before we send a STATE.
         match packet.packet_type() {
             PacketType::Syn | PacketType::Fin | PacketType::Data => {
+                // error!("sending an ack {:?}", packet);
                 if let Some(state) = self.state_packet() {
                     let event = SocketEvent::Outgoing((state, self.peer.clone()));
                     if self.socket_events.send(event).is_err() {
@@ -872,14 +875,8 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
     ) -> Result<(), Error> {
         match &mut self.state {
             State::Connected { sent_packets, .. } => {
-                match sent_packets.on_ack(ack_num, selective_ack, delay, now) {
-                    Ok((full_acked, selected_acks)) => {
-                        self.unacked.retain(|seq, _| !full_acked.contains(*seq));
-                        for seq_num in selected_acks {
-                            self.unacked.remove(&seq_num);
-                        }
-                        Ok(())
-                    }
+                match sent_packets.on_ack(ack_num, selective_ack, delay, now, &mut self.unacked) {
+                    Ok(()) => Ok(()),
                     Err(err) => match err {
                         SentPacketsError::InvalidAckNum => {
                             let err = Error::InvalidAckNum;
@@ -1156,6 +1153,7 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
                 .selective_ack(recv_buf.selective_ack())
                 .build();
 
+            // info!("hi2");
             Self::transmit(
                 sent_packets,
                 &mut self.unacked,

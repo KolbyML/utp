@@ -10,6 +10,7 @@ use rand::{thread_rng, Rng};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::{mpsc, oneshot};
+use tracing::error;
 
 use crate::cid::ConnectionId;
 use crate::conn::ConnectionConfig;
