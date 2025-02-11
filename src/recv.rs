@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 
+use tracing::error;
+
 use crate::packet::SelectiveAck;
 use crate::seq::CircularRangeInclusive;
 
@@ -57,6 +59,7 @@ impl<const N: usize> ReceiveBuffer<N> {
     /// Reads data from the buffer into `buf`, returning the number of bytes read.
     pub fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         if buf.is_empty() {
+            // error!("buf is empty55555553");
             return Ok(0);
         }
 
@@ -65,6 +68,14 @@ impl<const N: usize> ReceiveBuffer<N> {
 
         let remaining = self.offset - n;
         self.buf.as_mut_slice().copy_within(n..n + remaining, 0);
+        // error!(
+        //     "offset4324234234: {} {} {} {} {}",
+        //     self.available(),
+        //     buf.len(),
+        //     self.offset,
+        //     n,
+        //     remaining
+        // );
         self.offset = remaining;
 
         Ok(n)
@@ -77,6 +88,16 @@ impl<const N: usize> ReceiveBuffer<N> {
     /// Panics if `data.len()` is greater than the amount of available bytes in the buffer and the
     /// data for `seq_num` has not already been written.
     pub fn write(&mut self, data: &[u8], seq_num: u16) {
+        // error!(
+        //     "write: {} {} {} {} {} {} {:?}",
+        //     self.available(),
+        //     data.len(),
+        //     self.offset,
+        //     self.consumed,
+        //     seq_num,
+        //     self.pending.len(),
+        //     self.pending.keys().into_iter().collect::<Vec<_>>()
+        // );
         if self.was_written(seq_num) {
             return;
         }
@@ -90,6 +111,7 @@ impl<const N: usize> ReceiveBuffer<N> {
         self.pending.insert(seq_num, data.to_vec());
         let start = self.init_seq_num.wrapping_add(1);
         let mut next = start.wrapping_add(self.consumed);
+        // error!("write344554 {} {}", next, self.init_seq_num);
         while let Some(data) = self.pending.remove(&next) {
             let end = self.offset + data.len();
             self.buf.as_mut_slice()[self.offset..end].copy_from_slice(&data[..]);
@@ -98,6 +120,16 @@ impl<const N: usize> ReceiveBuffer<N> {
             self.consumed += 1;
             next = next.wrapping_add(1);
         }
+
+        // error!(
+        //     "write22: {} {} {} {} {} {}",
+        //     self.available(),
+        //     data.len(),
+        //     self.offset,
+        //     self.consumed,
+        //     seq_num,
+        //     self.pending.len()
+        // );
     }
 
     /// Returns the last sequence number in a contiguous sequence from the initial sequence number.

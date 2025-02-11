@@ -22,6 +22,7 @@ pub struct SentPacket {
     pub transmission: Instant,
     pub retransmissions: Vec<Instant>,
     pub acks: Vec<Instant>,
+    pub need_resend: bool,
 }
 
 impl SentPacket {
@@ -37,11 +38,10 @@ pub struct SentPackets {
     pub outgoing_packets: SizableCircularBuffer<SentPacket>,
 
     /// The sequence number of the next packet to send.
-    next_sequence_number: u16,
+    pub next_sequence_number: u16,
 
     /// The amount of packets in flight
-    current_packet_window: u16,
-    lost_packets: BTreeSet<u16>,
+    pub current_packet_window: u16,
     congestion_ctrl: congestion::Controller,
 }
 
@@ -67,7 +67,6 @@ impl SentPackets {
             outgoing_packets: SizableCircularBuffer::new(),
             next_sequence_number: next_sequence_number.wrapping_add(1),
             current_packet_window: 0,
-            lost_packets: BTreeSet::new(),
             congestion_ctrl,
         }
     }
@@ -103,22 +102,6 @@ impl SentPackets {
 
     pub fn has_unacked_packets(&self) -> bool {
         self.first_unacked_seq_num().is_some()
-    }
-
-    pub fn has_lost_packets(&self) -> bool {
-        !self.lost_packets.is_empty()
-    }
-
-    pub fn lost_packets(&self) -> Vec<(u16, PacketType, Option<Bytes>)> {
-        self.lost_packets
-            .iter()
-            .map(|seq| {
-                // The unwrap is safe because only sent packets may be lost.
-                let packet = self.outgoing_packets.get(*seq as usize).unwrap();
-
-                (packet.seq_num, packet.packet_type, packet.data.clone())
-            })
-            .collect()
     }
 
     /// # Panics
@@ -169,6 +152,7 @@ impl SentPackets {
                     transmission: now,
                     retransmissions: Vec::new(),
                     acks: Vec::new(),
+                    need_resend: false,
                 };
                 self.current_packet_window += 1;
                 self.outgoing_packets
@@ -253,14 +237,6 @@ impl SentPackets {
         // An ACK for `ack_num` implicitly ACKs all sequence numbers that precede `ack_num`.
         // Account for any preceding unacked packets.
         self.ack_prior_unacked(ack_num, delay, now, unacked);
-
-        // Account for (newly) lost packets.
-        let lost = self.detect_lost_packets();
-        for packet in lost {
-            if self.lost_packets.insert(packet) {
-                self.on_lost(packet, true);
-            }
-        }
     }
 
     /// # Panics
@@ -337,7 +313,8 @@ impl SentPackets {
 
             self.outgoing_packets.delete(seq_num as usize);
             unacked.remove(&packet.seq_num);
-            self.lost_packets.remove(&packet.seq_num);
+        } else {
+            // panic!("cannot ack unsent packet");
         }
     }
 
@@ -397,8 +374,7 @@ impl SentPackets {
     fn first_unacked_seq_num(&self) -> Option<u16> {
         Some(
             self.next_sequence_number
-                .wrapping_sub(self.current_packet_window)
-                .wrapping_sub(1),
+                .wrapping_sub(self.current_packet_window),
         )
     }
 }
@@ -419,7 +395,9 @@ mod test {
             let congestion_ctrl = congestion::Controller::new(congestion::Config::default());
             let mut sent_packets = SentPackets::new(next_seq_num, congestion_ctrl);
             if len == 0 {
-                return TestResult::from_bool(sent_packets.next_seq_num() == next_seq_num);
+                return TestResult::from_bool(
+                    sent_packets.next_seq_num() == next_seq_num.wrapping_add(1),
+                );
             }
 
             let final_seq_num = next_seq_num.wrapping_add(u16::from(len));
@@ -435,6 +413,7 @@ mod test {
                         transmission,
                         acks: Default::default(),
                         retransmissions: Default::default(),
+                        need_resend: false,
                     },
                 );
                 sent_packets.next_sequence_number = seq_num.wrapping_add(1);
@@ -513,144 +492,147 @@ mod test {
         sent_packets.on_transmit(out_of_order_seq_num, PacketType::Data, Some(data), len, now);
     }
 
-    // #[test]
-    // fn on_selective_ack() {
-    //     let next_seq_num = u16::MAX;
-    //     let congestion_ctrl = congestion::Controller::new(congestion::Config::default());
-    //     let mut sent_packets = SentPackets::new(next_seq_num, congestion_ctrl);
+    #[test]
+    fn on_selective_ack() {
+        let next_seq_num = u16::MAX;
+        let congestion_ctrl = congestion::Controller::new(congestion::Config::default());
+        let mut sent_packets = SentPackets::new(next_seq_num, congestion_ctrl);
+        let mut unacked = HashMapDelay::new(Duration::from_secs(1));
 
-    //     let data = vec![0];
-    //     let len = data.len() as u32;
+        let data = vec![0];
+        let len = data.len() as u32;
 
-    //     const COUNT: usize = 10;
-    //     for _ in 0..COUNT {
-    //         let now = Instant::now();
-    //         let seq_num = sent_packets.next_seq_num();
-    //         sent_packets.on_transmit(seq_num, PacketType::Data, Some(data.clone()), len, now);
-    //     }
+        const COUNT: usize = 10;
+        for _ in 0..COUNT {
+            let now = Instant::now();
+            let seq_num = sent_packets.next_seq_num();
+            sent_packets.on_transmit(seq_num, PacketType::Data, Some(data.clone()), len, now);
+        }
 
-    //     const SACK_LEN: usize = COUNT - 2;
-    //     let mut acked = vec![false; SACK_LEN];
-    //     for (i, ack) in acked.iter_mut().enumerate() {
-    //         if i % 2 == 0 {
-    //             *ack = true;
-    //         }
-    //     }
-    //     let selective_ack = SelectiveAck::new(acked);
+        const SACK_LEN: usize = COUNT - 2;
+        let mut acked = vec![false; SACK_LEN];
+        for (i, ack) in acked.iter_mut().enumerate() {
+            if i % 2 == 0 {
+                *ack = true;
+            }
+        }
+        let selective_ack = SelectiveAck::new(acked);
 
-    //     let now = Instant::now();
-    //     sent_packets
-    //         .on_ack(
-    //             next_seq_num.wrapping_add(1),
-    //             Some(&selective_ack),
-    //             DELAY,
-    //             now,
-    //         )
-    //         .unwrap();
-    //     for i in 2..COUNT {
-    //         let is_empty = i % 2 == 0;
-    //         assert_eq!(
-    //             sent_packets
-    //                 .outgoing_packets
-    //                 .get(next_seq_num.wrapping_add(i as u16) as usize)
-    //                 .unwrap()
-    //                 .acks
-    //                 .is_empty(),
-    //             is_empty
-    //         );
-    //     }
-    // }
+        let now = Instant::now();
+        sent_packets
+            .on_ack(
+                next_seq_num.wrapping_add(1),
+                Some(&selective_ack),
+                DELAY,
+                now,
+                &mut unacked,
+            )
+            .unwrap();
+        for i in 2..COUNT {
+            let is_empty = i % 2 == 0;
+            assert_eq!(
+                sent_packets
+                    .outgoing_packets
+                    .get(next_seq_num.wrapping_add(i as u16) as usize)
+                    .unwrap()
+                    .acks
+                    .is_empty(),
+                is_empty
+            );
+        }
+    }
 
-    // #[test]
-    // fn detect_lost_packets() {
-    //     let next_seq_num = u16::MAX;
-    //     let congestion_ctrl = congestion::Controller::new(congestion::Config::default());
-    //     let mut sent_packets = SentPackets::new(next_seq_num, congestion_ctrl);
+    #[test]
+    fn detect_lost_packets() {
+        let next_seq_num = u16::MAX;
+        let congestion_ctrl = congestion::Controller::new(congestion::Config::default());
+        let mut sent_packets = SentPackets::new(next_seq_num, congestion_ctrl);
+        let mut unacked = HashMapDelay::new(Duration::from_secs(1));
 
-    //     let data = vec![0];
-    //     let len = data.len() as u32;
+        let data = vec![0];
+        let len = data.len() as u32;
 
-    //     const COUNT: usize = 10;
-    //     const START: usize = COUNT - LOSS_THRESHOLD;
-    //     for i in 0..COUNT {
-    //         let now = Instant::now();
-    //         let seq_num = sent_packets.next_seq_num();
-    //         sent_packets.on_transmit(seq_num, PacketType::Data, Some(data.clone()), len, now);
+        const COUNT: usize = 10;
+        const START: usize = COUNT - LOSS_THRESHOLD;
+        for i in 0..COUNT {
+            let now = Instant::now();
+            let seq_num = sent_packets.next_seq_num();
+            sent_packets.on_transmit(seq_num, PacketType::Data, Some(data.clone()), len, now);
 
-    //         if i >= START {
-    //             sent_packets.ack(seq_num, DELAY, now);
-    //         }
-    //     }
+            if i >= START {
+                sent_packets.ack(seq_num, DELAY, now, &mut unacked);
+            }
+        }
 
-    //     let lost = sent_packets.detect_lost_packets();
-    //     for i in [65535, 0, 1, 2, 3, 4, 5] {
-    //         let packet = &sent_packets.outgoing_packets.get(i).unwrap();
-    //         assert!(lost.contains(&packet.seq_num));
-    //     }
-    // }
+        let lost = sent_packets.detect_lost_packets();
+        panic!("{:?}", lost);
+        for i in [65535, 0, 1, 2, 3, 4, 5] {
+            let packet = &sent_packets.outgoing_packets.get(i).unwrap();
+            assert!(lost.contains(&packet.seq_num));
+        }
+    }
 
-    // #[test]
-    // fn ack() {
-    //     let next_seq_num = u16::MAX;
-    //     let congestion_ctrl = congestion::Controller::new(congestion::Config::default());
-    //     let mut sent_packets = SentPackets::new(next_seq_num, congestion_ctrl);
+    #[test]
+    fn ack() {
+        let next_seq_num = u16::MAX;
+        let congestion_ctrl = congestion::Controller::new(congestion::Config::default());
+        let mut sent_packets = SentPackets::new(next_seq_num, congestion_ctrl);
+        let mut unacked = HashMapDelay::new(Duration::from_secs(1));
 
-    //     let seq_num = sent_packets.next_seq_num();
-    //     let data = vec![0];
-    //     let len = data.len() as u32;
-    //     let now = Instant::now();
-    //     sent_packets.on_transmit(seq_num, PacketType::Data, Some(data), len, now);
+        let seq_num = sent_packets.next_seq_num();
+        let data = vec![0];
+        let len = data.len() as u32;
+        let now = Instant::now();
+        sent_packets.on_transmit(seq_num, PacketType::Data, Some(data), len, now);
 
-    //     // Artificially insert packet into lost packets.
-    //     sent_packets.lost_packets.insert(seq_num);
-    //     assert!(sent_packets.lost_packets.contains(&seq_num));
+        let now = Instant::now();
+        sent_packets.ack(seq_num, DELAY, now, &mut unacked);
 
-    //     let now = Instant::now();
-    //     sent_packets.ack(seq_num, DELAY, now);
+        let packet = sent_packets.outgoing_packets.get(seq_num as usize).unwrap();
 
-    //     let packet = sent_packets.outgoing_packets.get(seq_num as usize).unwrap();
+        assert_eq!(packet.acks.len(), 1);
+        assert_eq!(packet.acks[0], now);
+    }
 
-    //     assert_eq!(packet.acks.len(), 1);
-    //     assert_eq!(packet.acks[0], now);
-    //     assert!(!sent_packets.lost_packets.contains(&seq_num));
-    // }
+    #[test]
+    fn ack_prior_unacked() {
+        let next_seq_num = u16::MAX;
+        let congestion_ctrl = congestion::Controller::new(congestion::Config::default());
+        let mut sent_packets = SentPackets::new(next_seq_num, congestion_ctrl);
+        let mut unacked = HashMapDelay::new(Duration::from_secs(1));
 
-    // #[test]
-    // fn ack_prior_unacked() {
-    //     let next_seq_num = 0;
-    //     let congestion_ctrl = congestion::Controller::new(congestion::Config::default());
-    //     let mut sent_packets = SentPackets::new(next_seq_num, congestion_ctrl);
+        let data = vec![0];
+        let len = data.len() as u32;
 
-    //     let data = vec![0];
-    //     let len = data.len() as u32;
+        const COUNT: usize = 10;
+        for _ in 0..COUNT {
+            let now = Instant::now();
+            let seq_num = sent_packets.next_seq_num();
+            sent_packets.on_transmit(seq_num, PacketType::Data, Some(data.clone()), len, now);
+        }
 
-    //     const COUNT: usize = 10;
-    //     for _ in 0..COUNT {
-    //         let now = Instant::now();
-    //         let seq_num = sent_packets.next_seq_num();
-    //         sent_packets.on_transmit(seq_num, PacketType::Data, Some(data.clone()), len, now);
-    //     }
+        const ACK_NUM: u16 = 3;
+        assert!(usize::from(ACK_NUM) < COUNT);
+        assert!(COUNT - usize::from(ACK_NUM) > 2);
 
-    //     const ACK_NUM: u16 = 3;
-    //     assert!(usize::from(ACK_NUM) < COUNT);
-    //     assert!(COUNT - usize::from(ACK_NUM) > 2);
+        let now = Instant::now();
+        sent_packets.ack_prior_unacked(ACK_NUM, DELAY, now, &mut unacked);
+        panic!("{:?}", sent_packets.outgoing_packets);
+        for i in 0..usize::from(ACK_NUM) {
+            assert_eq!(sent_packets.outgoing_packets.get(i).unwrap().acks.len(), 1);
+        }
+    }
 
-    //     let now = Instant::now();
-    //     sent_packets.ack_prior_unacked(ACK_NUM, DELAY, now);
-    //     for i in 0..usize::from(ACK_NUM) {
-    //         assert_eq!(sent_packets.outgoing_packets.get(i).unwrap().acks.len(), 1);
-    //     }
-    // }
+    #[test]
+    #[should_panic]
+    fn ack_unsent() {
+        let init_seq_num = u16::MAX;
+        let congestion_ctrl = congestion::Controller::new(congestion::Config::default());
+        let mut sent_packets = SentPackets::new(init_seq_num, congestion_ctrl);
+        let mut unacked = HashMapDelay::new(Duration::from_secs(1));
 
-    // #[test]
-    // #[should_panic]
-    // fn ack_unsent() {
-    //     let init_seq_num = u16::MAX;
-    //     let congestion_ctrl = congestion::Controller::new(congestion::Config::default());
-    //     let mut sent_packets = SentPackets::new(init_seq_num, congestion_ctrl);
-
-    //     let unsent_ack_num = init_seq_num.wrapping_add(2);
-    //     let now = Instant::now();
-    //     sent_packets.ack(unsent_ack_num, DELAY, now);
-    // }
+        let unsent_ack_num = init_seq_num.wrapping_add(2);
+        let now = Instant::now();
+        sent_packets.ack(unsent_ack_num, DELAY, now, &mut unacked);
+    }
 }

@@ -9,6 +9,7 @@ use futures::StreamExt;
 use tokio::sync::{mpsc, oneshot, Notify};
 use tracing::error;
 use tracing::info;
+use tracing::warn;
 
 use crate::cid::ConnectionId;
 use crate::congestion;
@@ -200,7 +201,7 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
     ) -> Self {
         let (endpoint, peer_ts_diff, peer_recv_window) = match syn {
             Some(syn) => {
-                let syn_ack = 5;
+                let syn_ack = rand::random();
                 let endpoint = Endpoint::Acceptor((syn.seq_num(), syn_ack));
 
                 let now = crate::time::now_micros();
@@ -209,7 +210,7 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
                 (endpoint, peer_ts_diff, syn.window_size())
             }
             None => {
-                let syn = 10;
+                let syn = rand::random();
                 let endpoint = Endpoint::Initiator((syn, 0));
                 (endpoint, Duration::ZERO, u32::MAX)
             }
@@ -612,7 +613,10 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
             }
         };
 
+        // error!("processing reads123");
+
         while !recv_buf.is_empty() {
+            // error!("processing reads55555");
             let mut buf = vec![0; self.config.max_packet_size as usize];
             let n = recv_buf.read(&mut buf).unwrap();
             if n == 0 {
@@ -811,6 +815,7 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
         // If the packet contains a data payload, or the packet was a FIN, then notify readable
         // because there may be new data available in the receive buffer and/or reads to complete.
         if !packet.payload().is_empty() || std::matches!(packet.packet_type(), PacketType::Fin) {
+            // error!("notifying readable");
             self.readable.notify_one();
         }
 
@@ -967,6 +972,13 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
             State::Connected {
                 recv_buf, closing, ..
             } => {
+                // warn!(
+                //     "kkk53k3245k34k543k {} {} {} {}",
+                //     seq_num,
+                //     data.len(),
+                //     recv_buf.available(),
+                //     !recv_buf.was_written(seq_num)
+                // );
                 match closing {
                     // If the connection is closing and we have a remote FIN, then check whether the
                     // sequence number falls within the appropriate range. If it does, and there is
@@ -985,18 +997,21 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
                         }
 
                         if data.len() <= recv_buf.available() && !recv_buf.was_written(seq_num) {
+                            // warn!("kkk53k3245k34k543k 3 {}", seq_num);
                             recv_buf.write(data, seq_num);
                         }
                     }
                     // If the connection is established, and there is sufficient capacity, then incorporate
                     // the data into the receive buffer.
                     None => {
+                        // warn!("kkk53k3245k34k543k 2 {}", seq_num);
                         if data.len() <= recv_buf.available() && !recv_buf.was_written(seq_num) {
                             recv_buf.write(data, seq_num);
                         }
                     }
                 }
                 if data.len() <= recv_buf.available() && !recv_buf.was_written(seq_num) {
+                    // warn!("kkk53k3245k34k543k 4 {}", seq_num);
                     recv_buf.write(data, seq_num);
                 }
             }
@@ -1133,35 +1148,43 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
             } => (sent_packets, recv_buf),
         };
 
-        if !sent_packets.has_lost_packets() {
-            return;
-        }
-
         let conn_id = self.cid.send;
         let now_micros = crate::time::now_micros();
         let recv_window = recv_buf.available() as u32;
         let ts_diff_micros = self.peer_ts_diff.as_micros() as u32;
-        for (seq_num, packet_type, payload) in sent_packets.lost_packets() {
-            let mut packet =
-                PacketBuilder::new(packet_type, conn_id, now_micros, recv_window, seq_num);
-            if let Some(payload) = payload {
-                packet = packet.payload(payload);
-            }
-            let packet = packet
-                .ts_diff_micros(ts_diff_micros)
-                .ack_num(recv_buf.ack_num())
-                .selective_ack(recv_buf.selective_ack())
-                .build();
+        for seq_num in sent_packets.next_sequence_number
+            ..sent_packets
+                .next_sequence_number
+                .wrapping_sub(sent_packets.current_packet_window)
+        {
+            if let Some(sent_packet) = sent_packets.outgoing_packets.get(seq_num as usize) {
+                if sent_packet.need_resend {
+                    let mut packet = PacketBuilder::new(
+                        sent_packet.packet_type,
+                        conn_id,
+                        now_micros,
+                        recv_window,
+                        seq_num,
+                    );
+                    if let Some(payload) = sent_packet.data.clone() {
+                        packet = packet.payload(payload);
+                    }
+                    let packet = packet
+                        .ts_diff_micros(ts_diff_micros)
+                        .ack_num(recv_buf.ack_num())
+                        .selective_ack(recv_buf.selective_ack())
+                        .build();
 
-            // info!("hi2");
-            Self::transmit(
-                sent_packets,
-                &mut self.unacked,
-                &mut self.socket_events,
-                packet,
-                &self.peer,
-                now,
-            );
+                    Self::transmit(
+                        sent_packets,
+                        &mut self.unacked,
+                        &mut self.socket_events,
+                        packet,
+                        &self.peer,
+                        now,
+                    );
+                }
+            }
         }
     }
 

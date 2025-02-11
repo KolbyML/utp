@@ -60,7 +60,7 @@ async fn one_huge_data_transfer() {
 
     // At the time of writing, 1024 * 1024 + 1 will hang, because it's bigger than the send buffer,
     // and the sending logic pauses until the buffer is larger than the pending data.
-    const HUGE_DATA: &[u8] = &[0xf0; 1024 * 1000];
+    const HUGE_DATA: &[u8] = &[0xf0; 1024 * 1024 * 2];
 
     let _ = tracing_subscriber::fmt::try_init();
 
