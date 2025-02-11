@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use delay_map::HashMapDelay;
 use futures::StreamExt;
 use tokio::sync::{mpsc, oneshot, Notify};
+use tracing::error;
 
 use crate::cid::ConnectionId;
 use crate::congestion;
@@ -198,7 +199,7 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
     ) -> Self {
         let (endpoint, peer_ts_diff, peer_recv_window) = match syn {
             Some(syn) => {
-                let syn_ack = rand::random();
+                let syn_ack = 5;
                 let endpoint = Endpoint::Acceptor((syn.seq_num(), syn_ack));
 
                 let now = crate::time::now_micros();
@@ -207,7 +208,7 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
                 (endpoint, peer_ts_diff, syn.window_size())
             }
             None => {
-                let syn = rand::random();
+                let syn = 10;
                 let endpoint = Endpoint::Initiator((syn, 0));
                 (endpoint, Duration::ZERO, u32::MAX)
             }
@@ -878,6 +879,10 @@ impl<const N: usize, P: ConnectionPeer> Connection<N, P> {
                         for seq_num in selected_acks {
                             self.unacked.remove(&seq_num);
                         }
+                        error!(
+                            "full acked: {:?}",
+                            self.unacked.iter().map(|(seq, _)| *seq).collect::<Vec<_>>()
+                        );
                         Ok(())
                     }
                     Err(err) => match err {
