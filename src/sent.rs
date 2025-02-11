@@ -2,6 +2,8 @@ use std::collections::BTreeSet;
 use std::fmt::{self, Formatter};
 use std::time::{Duration, Instant};
 
+use tracing::info;
+
 use crate::congestion;
 use crate::packet::{PacketType, SelectiveAck};
 use crate::seq::CircularRangeInclusive;
@@ -221,6 +223,7 @@ impl SentPackets {
         if let Some(sack) = selective_ack {
             self.on_selective_ack(ack_num, sack, delay, now);
         } else {
+            info!("hi 1");
             self.ack(ack_num, delay, now);
         }
 
@@ -247,6 +250,7 @@ impl SentPackets {
         delay: Duration,
         now: Instant,
     ) {
+        info!("hi 2");
         self.ack(ack_num, delay, now);
 
         let range = self.seq_num_range();
@@ -262,6 +266,7 @@ impl SentPackets {
             }
 
             if ack {
+                info!("hi 3");
                 self.ack(sack_num, delay, now);
             }
 
@@ -301,6 +306,10 @@ impl SentPackets {
     fn ack(&mut self, seq_num: u16, delay: Duration, now: Instant) {
         let index = self.seq_num_index(seq_num);
         let packet = self.packets.get_mut(index).unwrap();
+        panic!(
+            "acknowledged unsent packet {:?} {:?} {:?}",
+            self.packets, seq_num, index
+        );
 
         let ack = congestion::Ack {
             delay,
@@ -325,6 +334,7 @@ impl SentPackets {
 
             let to_ack: Vec<u16> = self.packets[start..end].iter().map(|p| p.seq_num).collect();
             for seq_num in to_ack {
+                info!("hi 4");
                 self.ack(seq_num, delay, now);
             }
         }
